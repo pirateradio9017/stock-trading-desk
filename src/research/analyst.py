@@ -64,6 +64,7 @@ _TIER_META: dict[CandidateTier, tuple[str, Tone]] = {
 
 
 class _DraftMeta(BaseModel):
+    market_brief: str = Field(default="", max_length=6000, description="跨市场增量快报：按事件分段，写事实与时间、相对上期变化、主线/候补映射、传导假设、待验证点；只使用提供的证据。")
     badge: str = Field(description="简短市场定调标签，如'高波去杠杆 · 防御与长债避险占优'")
     headline: str = Field(description="一句话核心交易结论，必须引用真实数据")
     plain_guide: str = Field(description="2-3句大白话行动指引（只研不交易，聚焦观察与风控）")
@@ -179,7 +180,7 @@ def _collect_context_urls(bundle: IngestionBundle) -> list[tuple[str, str]]:
         _add(f"SEC {f.sym} {f.form} ({f.filing_date})", f.url)
     for m in bundle.primary.macro_proxies:
         _add(f"Macro {m.chain_id}", m.source_url)
-    for n in bundle.news.response.items[:10]:
+    for n in bundle.news.response.items[:20]:
         _add(f"新闻[{n.tag}] {n.title[:28]}", n.link)
     for r in bundle.news.raw_items[:8]:
         if r.lang == "en":
@@ -279,8 +280,8 @@ def build_research_context(
             lines.append(f"  {f.filing_date} | {f.sym} {f.form} (Items: {f.items or '-'}) | {f.url}")
 
     lines.append("\n=== 9. 高信噪比聚类快讯（中文 + 英文核心Wire） ===")
-    for n in bundle.news.response.items[:10]:
-        lines.append(f"  [ZH|{n.source}|{n.tag}] {n.title} ({n.pubDate})")
+    for n in bundle.news.response.items[:20]:
+        lines.append(f"  [ZH|{n.source}|{n.tag}] {n.title} ({n.pubDate}) | 摘要（非全文核验）: {n.summary[:1000]} | {n.link}")
     en_wires = [r for r in bundle.news.raw_items if r.lang == "en"]
     en_wires.sort(key=lambda x: x.score, reverse=True)
     for r in en_wires[:10]:
@@ -318,6 +319,7 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
    - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
    - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；不强行制造行业催化。
+   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。按素材实际覆盖欧亚股市、美国行业与公司、利率汇率、能源商品和加密，不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
 5. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 
@@ -848,6 +850,7 @@ def draft_to_state_response(
         badge=draft.meta.badge,
         headline=draft.meta.headline,
         plain_guide=draft.meta.plain_guide,
+        market_brief=draft.meta.market_brief,
         next_gate=draft.meta.next_gate,
         regime=draft.meta.regime,
         stance=draft.meta.stance,

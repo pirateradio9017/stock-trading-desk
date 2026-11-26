@@ -249,6 +249,8 @@ def test_state_response_full_round_trip() -> None:
         "analytics": _sample_analytics(),
     }
     model = StateResponse.model_validate(payload)
+    assert model.meta.market_brief == ""
+    payload["meta"]["market_brief"] = ""
     assert model.model_dump() == payload
     assert StateResponse.model_validate_json(model.model_dump_json()) == model
 

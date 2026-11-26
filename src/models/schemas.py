@@ -242,6 +242,7 @@ class MetaInfo(_DeskModel):
     tnx_note: str = ""
     btc_note: str = ""
     self_review: str = ""
+    market_brief: str = ""
 
 
 class MainlineItem(_DeskModel):

@@ -1168,6 +1168,7 @@
           </div>
           <h2 class="hero-headline">${escapeHtml(meta.headline || "")}</h2>
           <p class="hero-guide">${escapeHtml(meta.plain_guide || "")}</p>
+          ${meta.market_brief ? `<section class="ed-soft" style="margin:16px 0"><h3 style="margin:0 0 10px;font-size:16px">跨市场增量快报</h3><div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;font-size:14px">${escapeHtml(meta.market_brief)}</div></section>` : ""}
           <div class="hero-gate"><strong>下一验证关口：</strong>${escapeHtml(meta.next_gate || "")}</div>
           <div class="kpi-grid">${kpiHtml}</div>
           <div class="audit-foot"><strong>六维自审：</strong>${escapeHtml(meta.self_review || "")}</div>
