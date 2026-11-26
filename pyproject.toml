@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-trading-desk"
+version = "2.0.0"
+description = "美股交易链条观察 · 全市场主线与联动研判"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+    "requests>=2.32",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "feedparser>=6.0",
+    "yfinance>=0.2.50",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "google-genai>=1.0",
+    "tzdata>=2024.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
