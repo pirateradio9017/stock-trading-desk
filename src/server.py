@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
@@ -34,9 +34,30 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "HEAD", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next: Any) -> Response:
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path in ("/", "/index.html"):
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    return resp
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "detail": "Internal server error"},
+        headers={"Cache-Control": "no-store"},
+    )
+
 
 _live_lock = asyncio.Lock()
 _news_lock = asyncio.Lock()
@@ -141,7 +162,7 @@ async def _get_or_refresh_news(*, force: bool = False) -> NewsResponse:
             ) from exc
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def serve_index() -> HTMLResponse:
     if not FRONTEND_PATH.is_file():
         raise HTTPException(status_code=503, detail="frontend/index.html not built yet")
@@ -153,12 +174,12 @@ async def serve_index() -> HTMLResponse:
     )
 
 
-@app.get("/favicon.ico")
+@app.api_route("/favicon.ico", methods=["GET", "HEAD"])
 async def favicon() -> Response:
     return Response(status_code=204)
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def api_health(force: str | None = Query(default=None)) -> Response:
     data_dir = _data_dir()
     state_path = data_dir / "state.json"
@@ -189,7 +210,7 @@ async def api_health(force: str | None = Query(default=None)) -> Response:
     return _json_response(health)
 
 
-@app.get("/api/live")
+@app.api_route("/api/live", methods=["GET", "HEAD"])
 async def api_live(
     force: str | None = Query(default=None),
     sym: str | None = Query(default=None),
@@ -208,7 +229,7 @@ async def api_live(
     return _json_response(live)
 
 
-@app.get("/api/state")
+@app.api_route("/api/state", methods=["GET", "HEAD"])
 async def api_state(force: str | None = Query(default=None)) -> Response:
     state_path = _data_dir() / "state.json"
     state = _read_json_model(state_path, StateResponse)
@@ -222,20 +243,25 @@ async def api_state(force: str | None = Query(default=None)) -> Response:
     return _json_response(state)
 
 
-@app.get("/api/news")
+@app.api_route("/api/news", methods=["GET", "HEAD"])
 async def api_news(
     force: str | None = Query(default=None),
-    limit: int | None = Query(default=None),
+    limit: str | None = Query(default=None),
 ) -> Response:
     news = await _get_or_refresh_news(force=_is_force(force))
     if limit is not None:
-        clamped = max(1, min(limit, 50))
-        sliced = news.items[:clamped]
-        news = NewsResponse(
-            updatedAt=news.updatedAt,
-            count=len(sliced),
-            items=sliced,
-        )
+        try:
+            parsed = int(limit.strip())
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            clamped = max(1, min(parsed, 50))
+            sliced = news.items[:clamped]
+            news = NewsResponse(
+                updatedAt=news.updatedAt,
+                count=len(sliced),
+                items=sliced,
+            )
     return _json_response(news)
 
 

@@ -1205,8 +1205,8 @@
       }
 
       function buildRulerHtml(m, qm) {
-        const accel = Number(m.accel);
-        const flip = Number(m.flip);
+        const accel = finiteOrNull(Number(m.accel));
+        const flip = finiteOrNull(Number(m.flip));
         const anchor = m.anchor_sym || "";
         const q = qm[anchor] || null;
         const cur = q ? finiteOrNull(q.price) : null;
@@ -1216,21 +1216,21 @@
         let leftVal = 0;
         let rightVal = 0;
 
-        if (accel >= flip) {
+        if (accel !== null && flip !== null && accel >= flip) {
           leftVal = flip;
           rightVal = accel;
           leftLabel = `反转位 $${fmtLevel(flip)}`;
           rightLabel = `加速位 $${fmtLevel(accel)}`;
         } else {
-          leftVal = accel;
-          rightVal = flip;
+          leftVal = accel ?? 0;
+          rightVal = flip ?? 0;
           leftLabel = `加速位 $${fmtLevel(accel)}`;
           rightLabel = `反转位 $${fmtLevel(flip)}`;
         }
 
         let ratio = 0.5;
         const span = rightVal - leftVal;
-        if (cur !== null && Math.abs(span) > 1e-9) {
+        if (cur !== null && accel !== null && flip !== null && Math.abs(span) > 1e-9) {
           const raw = (cur - leftVal) / span;
           ratio = Math.max(0.04, Math.min(0.96, raw));
         }
@@ -1415,7 +1415,7 @@
               <div style="font-size:12.5px;color:var(--ink);">${escapeHtml(c.plain)}</div>
               <div style="font-size:12px;color:var(--ink-muted);"><strong>晋级规则：</strong>${escapeHtml(c.rule)}</div>
               <div style="font-size:11.5px;color:var(--ink-faint);">
-                首次发现 ${escapeHtml(c.first_seen)} · 滞留 ${escapeHtml(c.stale_days)} 天 · ${escapeHtml(c.history_log || "")}
+                首次发现 ${escapeHtml(c.first_seen)} · 滞留 ${escapeHtml(c.stale_days ?? 0)} 天 · ${escapeHtml(c.history_log || "")}
               </div>
             </article>
           `).join("");

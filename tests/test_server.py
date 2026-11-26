@@ -210,3 +210,49 @@ def test_server_returns_503_when_state_missing(tmp_path: Path, monkeypatch: pyte
     r_state = client.get("/api/state")
     assert r_state.status_code == 503
     assert "application/json" in r_state.headers.get("content-type", "")
+
+
+def test_tier5_adversarial_server_and_worker_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path))
+    bundle = _make_bundle()
+    with patch("src.pipeline.run_ingestion", new=AsyncMock(return_value=bundle)):
+        asyncio.run(
+            run_pipeline(
+                data_dir=tmp_path,
+                use_llm=False,
+                force_rebalance=False,
+                publish_kv=False,
+                include_screener=False,
+                now_utc=bundle.fetched_at_utc,
+            )
+        )
+
+    client = TestClient(app)
+
+    # HEAD method parity + security headers across HTML and API routes
+    for path in ("/", "/api/health", "/api/live", "/api/state", "/api/news"):
+        r_head = client.head(path)
+        assert r_head.status_code == 200, f"HEAD {path} returned {r_head.status_code}"
+        assert r_head.headers.get("x-content-type-options") == "nosniff"
+        assert r_head.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+    assert client.get("/").headers.get("x-frame-options") == "SAMEORIGIN"
+
+    # Non-numeric & extreme limit params on /api/news never 422/500
+    for q in ("abc", "-99", "0", "999999999999"):
+        r_n = client.get(f"/api/news?limit={q}")
+        assert r_n.status_code == 200
+        assert 1 <= r_n.json()["count"] <= 50
+
+    # Corrupted state.json returns clean 503 JSON
+    (tmp_path / "state.json").write_text("{bad json", encoding="utf-8")
+    r_corrupt = client.get("/api/state")
+    assert r_corrupt.status_code == 503
+    assert "application/json" in r_corrupt.headers.get("content-type", "")
+
+    # Worker edge parity static assertions
+    worker_src = (Path(__file__).resolve().parent.parent / "worker" / "src" / "index.js").read_text(encoding="utf-8")
+    assert '"XLU"' in worker_src
+    assert "regularMarketChangePercent" in worker_src
+    assert "meta.chartPreviousClose" not in worker_src
+    assert "easterSundayUtc" in worker_src
+    assert "try {" in worker_src and "} catch (err)" in worker_src
