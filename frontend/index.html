@@ -683,8 +683,6 @@
     .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
     .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
     .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
-    .radar-detail { margin-top:14px; padding:15px; border-radius:12px; background:var(--paper-soft); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
-    .radar-detail p { margin:5px 0; }
     .macro-metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -778,8 +776,6 @@
     .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
     .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
     .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
-    .radar-detail { margin-top:14px; padding:15px; border-radius:12px; background:var(--paper-soft); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
-    .radar-detail p { margin:5px 0; }
     .macro-metrics {
         grid-template-columns: 1fr;
       }
@@ -899,10 +895,9 @@
           <p class="radar-note">外圈 100 = 代理指标较顺风，内圈 0 = 较逆风。评分为规则观察值，不是收益概率。</p>
           <div class="radar-toolbar"><span id="radarTime"></span><button type="button" id="radarReplay" class="tab-btn">重播动画</button></div>
           <div class="chart-box-tall">
-            <canvas id="macroRadarCanvas" role="img" aria-label="五维宏观顺逆风评分；可使用下方按钮阅读各维度"></canvas>
+            <canvas id="macroRadarCanvas" role="img" aria-label="五维宏观顺逆风评分；可使用下方按钮跳转到对应维度详情"></canvas>
           </div>
-          <div id="radarDimensions" class="radar-dimensions" aria-label="选择维度"></div>
-          <div id="radarDetail" class="radar-detail" aria-live="polite"></div>
+          <div id="radarDimensions" class="radar-dimensions" aria-label="跳转到维度详情"></div>
           <p id="radarComparison" class="radar-note"></p>
         </div>
 
@@ -1717,18 +1712,15 @@
           return {id, label, rule, m, score: valid ? m.score : null};
         });
       }
-      function showRadarDetail(id) {
+      function selectRadarDimension(id) {
         radarSelected = id;
-        const r = radarRows().find(x => x.id === id);
-        if (!r) return;
-        const m = r.m || {};
         document.querySelectorAll('[data-radar-id]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.radarId === id)));
-        const url = safeHttpUrl(m.source_url);
-        document.getElementById('radarDetail').innerHTML = `<strong>${escapeHtml(r.label)} · ${r.score === null ? "数据待补充" : r.score + "/100"}</strong>
-          <p>${escapeHtml(m.plain || "本轮暂无可用观测，不以零分代替缺失。")}</p>
-          <p><strong>观测：</strong>${escapeHtml(m.m1_label || "—")} ${escapeHtml(m.m1_val || "—")} · ${escapeHtml(m.m1_date || "")}<br>${escapeHtml(m.m2_label || "—")} ${escapeHtml(m.m2_val || "—")} · ${escapeHtml(m.m2_date || "")}</p>
-          <p><strong>评分依据：</strong>${escapeHtml(r.rule)}</p><p><strong>需留意：</strong>${escapeHtml(m.concern || "等待进一步证据")}</p>
-          ${url ? `<a class="src-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">来源／核验入口 ↗</a>` : ""}`;
+        const card = document.querySelector(`[data-macro-id="${id}"]`);
+        if (card) {
+          card.tabIndex = -1;
+          card.focus({preventScroll: true});
+          card.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center'});
+        }
       }
       function renderMacroRadar(replay = false) {
         const rows = radarRows();
@@ -1745,8 +1737,7 @@
         document.getElementById('radarTime').textContent = "研究快照：" + (timestamp || "等待数据");
         document.getElementById('radarComparison').textContent = radarPrevious ? "虚线为本浏览器上次观察（" + radarPrevious.time + "），并非固定上一交易日。" : "首次观察暂无对比；后续研究更新后，可与本浏览器上次观察比较。";
         document.getElementById('radarDimensions').innerHTML = rows.map(r => `<button type="button" data-radar-id="${r.id}" aria-pressed="${r.id === radarSelected}">${escapeHtml(r.label)} · ${r.score === null ? "待补充" : r.score}</button>`).join('');
-        document.querySelectorAll('[data-radar-id]').forEach(b => b.onclick = () => showRadarDetail(b.dataset.radarId));
-        showRadarDetail(radarSelected);
+        document.querySelectorAll('[data-radar-id]').forEach(b => b.onclick = () => selectRadarDimension(b.dataset.radarId));
         const datasets = [{label:"本期代理评分",data:rows.map(r=>r.score),borderColor:"#5d7580",backgroundColor:"rgba(93,117,128,.16)",pointBackgroundColor:"#354951",pointBorderColor:"#5d7580",pointBorderWidth:3,pointRadius:5,pointHoverRadius:8,borderWidth:3,spanGaps:false}];
         if (radarPrevious) datasets.push({label:"上次观察",data:radarPrevious.scores,borderColor:"#b79c78",backgroundColor:"transparent",borderDash:[5,5],pointRadius:2,borderWidth:1.5,spanGaps:false});
         const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1755,7 +1746,7 @@
         makeOrReplaceChart('macroRadarCanvas', {
           type:'radar', data:{labels:rows.map(r=>r.label),datasets},
           options:{animation:reduced ? false : {duration:850,easing:'easeOutQuart'},
-            onClick:(event,elements)=>{if(elements.length) showRadarDetail(rows[elements[0].index].id);},
+            onClick:(event,elements)=>{if(elements.length) selectRadarDimension(rows[elements[0].index].id);},
             plugins:{legend:{display:!!radarPrevious,position:'bottom'},tooltip:{callbacks:{afterLabel:ctx=>rows[ctx.dataIndex].m?.wind || ""}}},
             scales:{r:{min:0,max:100,ticks:{stepSize:25,backdropColor:'transparent',font:{size:10}},grid:{color:'#e0dbd3'},angleLines:{color:'#e0dbd3'},pointLabels:{font:{size:innerWidth < 500 ? 10 : 13,weight:'bold'},color:'#363c3c'}}}}
         });
