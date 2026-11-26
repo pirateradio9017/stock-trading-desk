@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import calendar as py_calendar
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -17,6 +16,7 @@ from src.config import (
     SEC_TRACKED_CIKS,
     SEC_USER_AGENT,
     TZ_ET,
+    TZ_CN,
     get_us_holiday_name,
     is_us_market_holiday,
     is_us_trading_day,
@@ -349,32 +349,6 @@ def _next_valid_trading_day(start_day: date) -> date:
     return d
 
 
-def _first_friday_of_month(year: int, month: int) -> date:
-    first = date(year, month, 1)
-    offset = (4 - first.weekday()) % 7
-    return _next_valid_trading_day(first + timedelta(days=offset))
-
-
-def _first_business_day_of_month(year: int, month: int) -> date:
-    return _next_valid_trading_day(date(year, month, 1))
-
-
-def _mid_month_cpi_window(year: int, month: int) -> date:
-    # CPI typically releases on a Tue/Wed/Thu around the 11th–15th trading day window.
-    candidate = date(year, month, 12)
-    while not is_us_trading_day(candidate) or candidate.weekday() not in (1, 2, 3):
-        candidate += timedelta(days=1)
-    return candidate
-
-
-def _late_month_pce_window(year: int, month: int) -> date:
-    last_dom = py_calendar.monthrange(year, month)[1]
-    candidate = date(year, month, min(28, last_dom))
-    while not is_us_trading_day(candidate):
-        candidate -= timedelta(days=1)
-    return candidate
-
-
 def build_holiday_safe_calendar(
     now_utc: datetime,
     sec_filings: list[SecFilingSignal],
@@ -389,7 +363,7 @@ def build_holiday_safe_calendar(
         events.append(
             CalendarEvent(
                 day=reopen_day.isoformat(),
-                time="22:30 UTC+8",
+                time=datetime(reopen_day.year, reopen_day.month, reopen_day.day, 9, 30, tzinfo=TZ_ET).astimezone(TZ_CN).strftime("%H:%M UTC+8"),
                 title=f"美股节后恢复开盘（{holiday_name}次日交易）",
                 tag="全市场流动性恢复",
                 tone="slate",
@@ -398,48 +372,14 @@ def build_holiday_safe_calendar(
             )
         )
 
-    # Upcoming verified US macro release cadence (strictly placed on valid NYSE trading days).
-    cur_y, cur_m = today_et.year, today_et.month
-    next_y, next_m = (cur_y + 1, 1) if cur_m == 12 else (cur_y, cur_m + 1)
-
-    cadence: list[tuple[date, str, str, str, str, str, str]] = []
-    for yr, mo in ((cur_y, cur_m), (next_y, next_m)):
-        cadence.append((
-            _late_month_pce_window(yr, mo),
-            "21:30 UTC+8",
-            "美国 PCE 通胀与个人消费支出",
-            "影响 M1/M3 · 利率 / 消费主线",
-            "ochre",
-            "核心PCE决定美联储降息空间与10Y美债方向，直接传导至高估值算力与地产链。",
-            "https://www.bea.gov/news/schedule",
-        ))
-        cadence.append((
-            _first_business_day_of_month(yr, mo),
-            "23:00 UTC+8",
-            "ISM 制造业 PMI",
-            "影响 M3 · 宏观景气 / 工业铜",
-            "sage",
-            "观察新订单与价格分项是否共振走强，验证顺周期与工业金属需求。",
-            "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
-        ))
-        cadence.append((
-            _first_friday_of_month(yr, mo),
-            "21:30 UTC+8",
-            "美国非农就业与失业率 (NFP)",
-            "影响 M1/M3 · 利率 / 降息定价",
-            "terra",
-            "就业韧性与薪资增速若超预期将推高10Y美债收益率，考验风险资产估值。",
-            "https://www.bls.gov/schedule/news_release/empsit.htm",
-        ))
-        cadence.append((
-            _mid_month_cpi_window(yr, mo),
-            "21:30 UTC+8",
-            "美国 CPI 消费者物价指数",
-            "影响 M3 · 利率 / 黄金 / 长债",
-            "ochre",
-            "观察住房与核心服务通胀粘性，对TLT、黄金及纳指敏感度最高。",
-            "https://www.bls.gov/schedule/news_release/cpi.htm",
-        ))
+    # Never infer official releases from month/day heuristics. Local checkpoints
+    # are explicitly labelled as research tasks, not economic announcements.
+    check_day = _next_valid_trading_day(today_et + timedelta(days=1))
+    events.append(CalendarEvent(
+        day=check_day.isoformat(), time="待官方日历确认",
+        title="宏观发布日程核验（研究待办，非数据公布）", tag="日程待核验",
+        tone="slate", desc="核对 BEA/BLS 官方日历后再设置 PCE、CPI、非农提醒；不按月份规律推算。",
+        source_url="https://www.bea.gov/news/schedule"))
 
     # Include any near-term SEC filing review checkpoint on the next trading day if fresh.
     if sec_filings:
@@ -449,7 +389,7 @@ def build_holiday_safe_calendar(
         events.append(
             CalendarEvent(
                 day=check_day.isoformat(),
-                time="21:00 UTC+8",
+                time="开盘前后（研究待办）",
                 title=f"SEC 披露跟踪：{latest_sec.sym} {latest_sec.form}（{latest_sec.filing_date}）",
                 tag=f"{sec_m_tag} 一手公告核验",
                 tone="sage",
@@ -457,30 +397,6 @@ def build_holiday_safe_calendar(
                 source_url=latest_sec.url,
             )
         )
-
-    seen_titles: set[tuple[str, str]] = set()
-    for ev_day, ev_time, title, tag, tone, desc, url in sorted(cadence, key=lambda x: x[0]):
-        if ev_day <= today_et:
-            continue
-        if is_us_market_holiday(ev_day) or ev_day.weekday() >= 5:
-            continue
-        key = (ev_day.isoformat(), title)
-        if key in seen_titles:
-            continue
-        seen_titles.add(key)
-        events.append(
-            CalendarEvent(
-                day=ev_day.isoformat(),
-                time=ev_time,
-                title=title,
-                tag=tag,
-                tone=tone,  # type: ignore[arg-type]
-                desc=desc,
-                source_url=url,
-            )
-        )
-        if len(events) >= 6:
-            break
 
     return events
 

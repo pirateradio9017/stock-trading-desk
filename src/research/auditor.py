@@ -89,8 +89,7 @@ def _is_trusted_url(url: str, verified_urls: set[str]) -> bool:
         return False
     if url in verified_urls:
         return True
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == dom or host.endswith(f".{dom}") for dom in _TRUSTED_SOURCE_DOMAINS)
+    return False  # A reputable hostname does not verify an invented document path.
 
 
 def _collect_verified_urls(bundle: IngestionBundle) -> set[str]:
@@ -125,10 +124,6 @@ def _fallback_url_for_anchor(anchor_sym: str, bundle: IngestionBundle) -> str:
     for n in bundle.news.response.items:
         if sym_u in n.title.upper() or sym_u in n.summary.upper():
             return n.link
-    if bundle.news.response.items:
-        return bundle.news.response.items[0].link
-    if bundle.primary.sec_filings:
-        return bundle.primary.sec_filings[0].url
     return f"https://finance.yahoo.com/quote/{anchor_sym}"
 
 
@@ -260,6 +255,7 @@ def audit_and_repair_state(
         # Source URL verification
         if not _is_trusted_url(m.source_url, verified_urls):
             updates["source_url"] = _fallback_url_for_anchor(m.anchor_sym, bundle)
+            updates["summary"] = "【原引用未匹配本轮采集，以下论述待核验；链接仅作查阅入口】" + m.summary
             url_repaired = True
             repairs.append(f"M{idx}: 替换非白名单/无效信源 URL")
 
@@ -269,7 +265,7 @@ def audit_and_repair_state(
             ("summary", f"围绕 {m.anchor_sym} 与关联板块跟踪资金流向及基本面催化。"),
             ("watch_points", f"重点观察 {m.anchor_sym} 加速位与证伪位得失及成交配合。"),
         ):
-            val = getattr(m, field_name)
+            val = updates.get(field_name, getattr(m, field_name))
             cleaned = _sanitize_text(val, fallback_txt)
             if cleaned != val:
                 updates[field_name] = cleaned
@@ -348,6 +344,8 @@ def audit_and_repair_state(
         and len(analytics.corrMatrix) == 6
         and all(len(row) == 6 for row in analytics.corrMatrix)
         and all(abs(analytics.corrMatrix[i][i] - 1.0) <= 1e-3 for i in range(6))
+        and all(abs(analytics.corrMatrix[i][j] - analytics.corrMatrix[j][i]) <= 1e-6 for i in range(6) for j in range(6))
+        and analytics.corrMatrix == bundle.market.corr_matrix
     )
     if not corr_ok:
         analytics = AnalyticsData(
@@ -404,7 +402,7 @@ def audit_and_repair_state(
         AuditCheck(
             dim="Schema 洁净与禁词",
             passed=dim2_ok,
-            detail="结构数量合规、无 Date()/NaN/Inf 残留" if dim2_ok else f"发现异常: {', '.join(forbidden[:2])}",
+            detail="结构数量合规、无 Date()/NaN/Inf 残留" if dim2_ok else f"结构数量合规={counts_ok}; 内容异常: {', '.join(forbidden[:2])}",
         )
     )
 
@@ -446,9 +444,9 @@ def audit_and_repair_state(
     )
     checks.append(
         AuditCheck(
-            dim="一手信源 URL 核验",
+            dim="来源地址匹配检查",
             passed=all_urls_valid,
-            detail="主线/宏观/日程信源均通过 http(s) 与域名核验" if all_urls_valid else "存在非法信源 URL",
+            detail="来源地址检查；正文事实与因果推断仍需核验" if all_urls_valid else "存在非法信源 URL",
             repaired=url_repaired,
         )
     )
@@ -473,10 +471,8 @@ def audit_and_repair_state(
 
     passed_count = sum(1 for c in checks if c.passed)
     overall_ok = passed_count == len(checks)
-    mode_tag = f"Gemini ({model_used})" if engine_mode == "gemini" and model_used else (
-        "Gemini 深度研判" if engine_mode == "gemini" else "定量降级引擎"
-    )
-    repair_note = f"自动修复 {len(repairs)} 项" if repairs else "零幻觉零修复"
+    mode_tag = f"{engine_mode} ({model_used})" if engine_mode in ("gemini", "deepseek") else "定量降级引擎"
+    repair_note = f"自动修复 {len(repairs)} 项" if repairs else "未触发自动修复（不代表事实已逐项核验）"
     summary_text = (
         f"6维自审 {passed_count}/6 通过 | 引擎: {mode_tag} | "
         f"行情 {live_ok}/{live_total} | SEC {len(bundle.primary.sec_filings)} | "

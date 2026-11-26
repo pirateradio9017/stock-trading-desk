@@ -33,7 +33,7 @@ class ResearchResult:
     state: StateResponse
     audit: AuditReport
     governance: GovernanceDecision
-    engine_mode: Literal["gemini", "deterministic_fallback"]
+    engine_mode: Literal["gemini", "deepseek", "deterministic_fallback"]
     model_used: str
     fallback_reason: str = ""
     saved_path: Path | None = None
@@ -69,6 +69,9 @@ async def run_research_cycle(
         timeout_sec=timeout_sec,
     )
 
+    if use_llm and prev_state is not None and synthesis.engine_mode == "deterministic_fallback":
+        raise RuntimeError("Model unavailable; preserving previous accepted research: " + synthesis.fallback_reason)
+
     evolved = evolve_state(
         synthesis.draft_state,
         prev_state,
@@ -84,6 +87,9 @@ async def run_research_cycle(
         engine_mode=synthesis.engine_mode,
         model_used=synthesis.model_used,
     )
+
+    if not audit_report.passed:
+        raise ValueError("Research audit rejected publication: " + audit_report.summary)
 
     saved: Path | None = None
     if persist:

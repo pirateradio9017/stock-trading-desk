@@ -307,8 +307,8 @@ def test_state_machine_intraday_lock_and_rebalance_evolution(tmp_path: Path) -> 
     state1_b = evolve_state(draft_to_state_response(draft1, b1, d1), state1, d1, t1_b, b1.market)
     assert len(state1_b.history) == len(state1.history)
 
-    # Step 3: Rebalance window on 2026-11-27 16:40 ET (21:40 UTC) -> allows promotion / demotion & history <= 20
-    t2 = datetime(2026, 11, 27, 21, 40, tzinfo=timezone.utc)
+    # Step 3: Rebalance window on 2026-11-27 13:40 ET (18:40 UTC) -> allows promotion / demotion & history <= 20
+    t2 = datetime(2026, 11, 27, 18, 40, tzinfo=timezone.utc)
     d2 = evaluate_governance_window(t2, has_prev_state=True)
     assert d2.allow_structural_rebalance is True
     # Simulate stale candidate C1 with stale_days=4 advancing one more flat day -> auto demote

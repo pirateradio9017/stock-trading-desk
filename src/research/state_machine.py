@@ -18,8 +18,10 @@ from src.config import (
     format_cn_timestamp,
     format_et_short,
     get_market_session,
+    get_market_close,
     get_research_window,
     get_us_holiday_name,
+    is_us_market_holiday,
     load_settings,
 )
 from src.ingestion.market_data import MarketSnapshot
@@ -81,6 +83,7 @@ def evaluate_governance_window(
       - PRE_MARKET / OFF_HOURS: preserve prior structure unless cold start or force_rebalance=True.
     """
     et_dt = now_utc.astimezone(TZ_ET)
+    close_hour = get_market_close(et_dt.date()).hour
     window = get_research_window(now_utc)
     session = get_market_session(now_utc)
     holiday_name = get_us_holiday_name(et_dt.date())
@@ -129,8 +132,8 @@ def evaluate_governance_window(
             allow_structural_rebalance=False,
             is_holiday=False,
             holiday_name=None,
-            reason="美股盘中 09:30-15:30 ET 防抖窗口，锁定主线骨架防止盘中噪音频繁换线",
-            badge_suffix="盘中防抖动锁定 (09:30-15:30 ET)",
+            reason=f"美股盘中 09:30-{close_hour-1}:30 ET 防抖窗口，锁定主线骨架防止盘中噪音频繁换线",
+            badge_suffix=f"盘中防抖动锁定 (09:30-{close_hour-1}:30 ET)",
         )
 
     if window == "POST_CLOSE_SETTLE":
@@ -140,7 +143,7 @@ def evaluate_governance_window(
             allow_structural_rebalance=False,
             is_holiday=False,
             holiday_name=None,
-            reason="尾盘及盘后结算期 (15:30-16:30 ET)，等待 16:30 ET 调仓窗口定型",
+            reason=f"尾盘及盘后结算期 ({close_hour-1}:30-{close_hour}:30 ET)，等待研究调整窗口定型",
             badge_suffix="尾盘结算等待调仓",
         )
 
@@ -151,8 +154,8 @@ def evaluate_governance_window(
             allow_structural_rebalance=True,
             is_holiday=False,
             holiday_name=None,
-            reason="美股收盘后 16:30-17:00 ET 调仓窗口，允许主线晋级、淘汰与权重重排",
-            badge_suffix="盘后调仓评估窗口 (16:30 ET)",
+            reason=f"美股收盘后 {close_hour}:30-{close_hour+1}:00 ET 研究窗口，允许主线晋级、淘汰与权重重排",
+            badge_suffix=f"盘后研究评估窗口 ({close_hour}:30 ET)",
         )
 
     if window == "PRE_MARKET":
@@ -192,7 +195,7 @@ def load_previous_state(state_path: Path | None = None) -> StateResponse | None:
         return StateResponse.model_validate(raw)
     except Exception as exc:
         logger.warning("Failed to load previous state from %s: %s", path, exc)
-        return None
+        raise ValueError(f"Invalid previous research state: {path}") from exc
 
 
 def save_state(state: StateResponse, state_path: Path | None = None) -> Path:
@@ -326,28 +329,14 @@ def _match_mainline(target: MainlineItem, pool: list[MainlineItem]) -> MainlineI
     for item in pool:
         if item.anchor_sym.upper() == target.anchor_sym.upper():
             return item
-    target_syms = set(_extract_syms(target.stocks))
-    for item in pool:
-        if target_syms and (target_syms & set(_extract_syms(item.stocks))):
-            return item
-    for item in pool:
-        if item.id == target.id:
-            return item
     return None
 
 
 def _match_candidate(target: CandidateItem, pool: list[CandidateItem]) -> CandidateItem | None:
-    for item in pool:
-        if item.name == target.name:
-            return item
-    target_syms = set(_extract_syms(target.stocks))
-    for item in pool:
-        if target_syms and (target_syms & set(_extract_syms(item.stocks))):
-            return item
-    for item in pool:
-        if item.id == target.id:
-            return item
-    return None
+    # Slots and overlapping tickers are not stable research identities.
+    return next((item for item in pool if item.name == target.name
+                 and set(_extract_syms(item.stocks)) == set(_extract_syms(target.stocks))), None)
+
 
 
 def evolve_state(
@@ -422,7 +411,7 @@ def evolve_state(
         note_title, note_detail, note_lesson = history_note or (
             f"初始化建档 · {meta.badge}",
             f"基于 {market.live.count} 只跨市场实时行情与一手公告完成 M1-M5 主线及 C1-C6 候补池首次建档。",
-            "首版建档锚定量价与因果传导证据，后续盘中与休市期启用防抖锁定，仅在 16:30 ET 调仓窗口评估换线。",
+            "首版建档锚定量价与因果传导证据，后续盘中与休市期启用防抖锁定，仅在收盘后研究窗口评估换线。",
         )
         init_entry = HistoryEntry(
             time=cn_ts,
@@ -443,7 +432,7 @@ def evolve_state(
         )
 
     prev_date = _prev_state_et_date(prev_state)
-    day_advanced = prev_date is not None and et_today > prev_date and not decision.is_holiday
+    day_advanced = prev_date is not None and et_today > prev_date and et_today.weekday() < 5 and not is_us_market_holiday(et_today)
 
     # Case 2: Locked governance window (anti-jitter lock preserves M1-M5 structural slots)
     if not decision.allow_structural_rebalance:
@@ -499,8 +488,7 @@ def evolve_state(
             if day_advanced:
                 stale = stale + 1 if abs(r5) < 1.5 else 0
             tier = prev_c.tier
-            if stale >= 5:
-                tier = "demote"
+            # Structural demotion is deferred until the rebalance window.
             tier_label, default_tone = _TIER_LABELS[tier]
             log_text = prev_c.history_log.strip() or f"{prev_c.first_seen} 持续跟踪"
             locked_candidates.append(
@@ -523,7 +511,7 @@ def evolve_state(
             type="防抖锁定",
             tone="slate",
             title=f"{decision.badge_suffix} · 维持 M1-M5 主线骨架",
-            detail=f"{decision.reason}。最新行情与跨市场动态已同步，主线排名与归属等待 16:30 ET 调仓窗口统一复核。",
+            detail=f"{decision.reason}。最新行情与跨市场动态已同步，主线排名与归属等待收盘后研究窗口统一复核。",
             lesson="遵守时段纪律：盘中噪音与休市无量期不随意切换主线，避免追涨杀跌导致观察框架漂移。",
         )
         history = list(prev_state.history)
@@ -650,7 +638,7 @@ def evolve_state(
     if promoted_titles:
         ev_type = "晋升主线"
         ev_tone: Literal["sage", "terra", "ochre", "slate"] = "sage"
-        ev_title = f"16:30 ET 调仓晋升：{', '.join(promoted_titles[:2])}"
+        ev_title = f"盘后研究晋升：{', '.join(promoted_titles[:2])}"
         drop_clause = f"；同时移出 {', '.join(dropped_titles[:2])}" if dropped_titles else ""
         ev_detail = f"收盘定型确认资金强弱切换，新晋主线 {', '.join(promoted_titles)}{drop_clause}。"
         ev_lesson = "主线轮动必须由收盘后多日量价与基本面催化共同确认，淘汰转弱旧线才能保持组合锐度。"
@@ -668,7 +656,7 @@ def evolve_state(
             ev_title, ev_detail, ev_lesson = history_note
         else:
             ev_title = f"收盘复盘定型 · {meta.badge}"
-            ev_detail = f"16:30 ET 复核 M1-M5 主线与 C1-C6 候补强弱，核心主线结构延续，更新评分与触发锚点。"
+            ev_detail = f"盘后研究复核 M1-M5 主线与 C1-C6 候补强弱，核心主线结构延续，更新评分与触发锚点。"
             ev_lesson = "趋势延续期以关键加速位/证伪位跟踪为主，不因单日波动破坏主线框架。"
 
     history.insert(

@@ -417,6 +417,16 @@ def _to_utc(dt: datetime | None) -> datetime:
     return dt.astimezone(TZ_UTC)
 
 
+EARLY_CLOSE_DATES = {
+    date(2026, 11, 27), date(2026, 12, 24),
+    date(2027, 11, 26), date(2028, 7, 3), date(2028, 11, 24),
+}
+
+
+def get_market_close(d: date) -> time:
+    return time(13, 0) if d in EARLY_CLOSE_DATES else time(16, 0)
+
+
 def get_market_session(
     dt: datetime | None = None,
 ) -> Literal["PRE_MARKET", "INTRADAY", "AFTER_HOURS", "OFF_HOURS", "HOLIDAY"]:
@@ -432,9 +442,10 @@ def get_market_session(
     t = et.time()
     if time(4, 0) <= t < time(9, 30):
         return "PRE_MARKET"
-    if time(9, 30) <= t < time(16, 0):
+    close = get_market_close(et.date())
+    if time(9, 30) <= t < close:
         return "INTRADAY"
-    if time(16, 0) <= t < time(20, 0):
+    if close <= t < (time(17, 0) if close.hour == 13 else time(20, 0)):
         return "AFTER_HOURS"
     return "OFF_HOURS"
 
@@ -459,11 +470,12 @@ def get_research_window(
     if et.weekday() >= 5:
         return "OFF_HOURS"
     t = et.time()
-    if time(9, 30) <= t < time(15, 30):
+    close_hour = get_market_close(et.date()).hour
+    if time(9, 30) <= t < time(close_hour - 1, 30):
         return "INTRADAY_LOCK"
-    if time(15, 30) <= t < time(16, 30):
+    if time(close_hour - 1, 30) <= t < time(close_hour, 30):
         return "POST_CLOSE_SETTLE"
-    if time(16, 30) <= t < time(17, 0):
+    if time(close_hour, 30) <= t < time(close_hour + 1, 0):
         return "REBALANCE_WINDOW"
     if time(4, 0) <= t < time(9, 30):
         return "PRE_MARKET"

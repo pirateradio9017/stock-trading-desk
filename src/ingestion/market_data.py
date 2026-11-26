@@ -400,12 +400,12 @@ def _build_corr_matrix(series_map: dict[str, SymbolSeries]) -> list[list[float]]
     for sym in CORR_SYMBOLS:
         s = series_map.get(sym)
         if s and len(s.dates) >= 10:
-            frame_data[sym] = pd.Series(s.closes, index=pd.to_datetime(s.dates)).pct_change()
+            frame_data[sym] = pd.Series(s.closes, index=pd.to_datetime(s.dates))
 
     if len(frame_data) < 2:
         return [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
 
-    df = pd.DataFrame(frame_data).sort_index().ffill().tail(45)
+    df = pd.DataFrame(frame_data).sort_index().dropna().tail(21).pct_change(fill_method=None)
     corr_df = df.corr(min_periods=8)
 
     matrix: list[list[float]] = []
@@ -453,7 +453,7 @@ def _build_linkage_trend(series_map: dict[str, SymbolSeries], now_utc: datetime)
         s = series_map.get(sym)
         if s and len(s.dates) >= 2:
             raw = pd.Series(s.closes, index=pd.to_datetime(s.dates))
-            aligned = raw.reindex(raw.index.union(anchor_index)).sort_index().ffill().bfill()
+            aligned = raw.reindex(raw.index.union(anchor_index)).sort_index().ffill()
             vals = aligned.reindex(anchor_index).tolist()
             base = _finite_or_none(vals[0]) if vals else None
             if base and base > 0:
@@ -464,9 +464,9 @@ def _build_linkage_trend(series_map: dict[str, SymbolSeries], now_utc: datetime)
                     for v in vals
                 ]
             else:
-                pct_vals = [0.0] * len(labels)
+                continue  # No price at the common starting date; do not backfill future prices.
         else:
-            pct_vals = [0.0] * len(labels)
+            continue  # Missing history is not a flat observed series.
 
         series_out.append(LinkageTrendSeries(sym=sym, label=label, values=pct_vals))
 

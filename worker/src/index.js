@@ -195,8 +195,10 @@ function detectMarketSession(date = new Date()) {
   }
   const mins = et.hour * 60 + et.minute;
   if (mins >= 240 && mins < 570) return { marketSession: "PRE_MARKET", updatedAtEt: etShort };
-  if (mins >= 570 && mins < 960) return { marketSession: "INTRADAY", updatedAtEt: etShort };
-  if (mins >= 960 && mins < 1200) return { marketSession: "AFTER_HOURS", updatedAtEt: etShort };
+  const early = new Set(["2026-11-27", "2026-12-24", "2027-11-26", "2028-7-3", "2028-11-24"]);
+  const close = early.has(`${et.year}-${et.month}-${et.day}`) ? 780 : 960;
+  if (mins >= 570 && mins < close) return { marketSession: "INTRADAY", updatedAtEt: etShort };
+  if (mins >= close && mins < (close === 780 ? 1020 : 1200)) return { marketSession: "AFTER_HOURS", updatedAtEt: etShort };
   return { marketSession: "OFF_HOURS", updatedAtEt: etShort };
 }
 
@@ -212,7 +214,7 @@ function roundOrNull(v, digits = 2) {
 }
 
 async function fetchYahooSymbol(sym, name, nowIso) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d&includePrePost=true`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d&includePrePost=true`;
   try {
     const resp = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" },
@@ -247,8 +249,10 @@ async function fetchYahooSymbol(sym, name, nowIso) {
         chg = ((price / prevClose) - 1) * 100;
       }
     }
-    let ahPrice = finiteOrNull(meta.postMarketPrice) ?? finiteOrNull(meta.preMarketPrice);
-    let ahChg = finiteOrNull(meta.postMarketChangePercent) ?? finiteOrNull(meta.preMarketChangePercent);
+    const pre = detectMarketSession(new Date(nowIso)).marketSession === "PRE_MARKET";
+    const usePre = (pre && finiteOrNull(meta.preMarketPrice) !== null) || finiteOrNull(meta.postMarketPrice) === null;
+    let ahPrice = finiteOrNull(usePre ? meta.preMarketPrice : meta.postMarketPrice);
+    let ahChg = finiteOrNull(usePre ? meta.preMarketChangePercent : meta.postMarketChangePercent);
     if (ahChg === null && ahPrice !== null && price !== null && price > 0) {
       ahChg = ((ahPrice / price) - 1) * 100;
     }
@@ -258,8 +262,8 @@ async function fetchYahooSymbol(sym, name, nowIso) {
       r5 = ((base - closes[closes.length - 6]) / closes[closes.length - 6]) * 100;
     }
     let r20 = null;
-    if (closes.length >= 2) {
-      const idx20 = Math.max(0, closes.length - 21);
+    if (closes.length >= 21) {
+      const idx20 = closes.length - 21;
       if (closes[idx20] > 0) {
         const base = price !== null ? price : closes[closes.length - 1];
         r20 = ((base - closes[idx20]) / closes[idx20]) * 100;
@@ -299,7 +303,8 @@ function isFreshTimestamp(tsStr, maxAgeMs) {
   const m = tsStr.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
   if (!m) return false;
   const utcMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 8, Number(m[5]), Number(m[6]));
-  return Date.now() - utcMs <= maxAgeMs;
+  const age = Date.now() - utcMs;
+  return age >= 0 && age <= maxAgeMs;
 }
 
 async function getLivePayload(env, ctx, force) {
@@ -311,7 +316,7 @@ async function getLivePayload(env, ctx, force) {
   const now = new Date();
   const nowIso = formatUtcIso(now);
   const { marketSession, updatedAtEt } = detectMarketSession(now);
-  const cachedBySym = {};
+  const cachedBySym = Object.create(null);
   if (cached && Array.isArray(cached.quotes)) {
     for (const q of cached.quotes) {
       if (q && q.sym) cachedBySym[q.sym] = q;
@@ -547,9 +552,6 @@ export default {
           const state = await safeKvJson(env, "state");
           if (!state) {
             return jsonResponse({ ok: false, error: "Research state not initialized in KV" }, 503);
-          }
-          if (force) {
-            state.serverSyncedAt = formatCnTimestamp(new Date());
           }
           return jsonResponse(state);
         }

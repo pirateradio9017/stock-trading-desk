@@ -15,7 +15,7 @@ from src.config import CORE_SYMBOLS
 from src.ingestion import IngestionBundle
 from src.ingestion.market_data import MarketSnapshot, SymbolSeries
 from src.ingestion.news_aggregator import AggregatedNews, RawWireItem
-from src.ingestion.primary_sources import PrimarySignals
+from src.ingestion.primary_sources import PrimarySignals, build_macro_proxies, build_holiday_safe_calendar
 from src.models.schemas import (
     HealthResponse,
     LinkageTrend,
@@ -97,8 +97,8 @@ def _make_bundle() -> IngestionBundle:
     primary = PrimarySignals(
         fetched_at_utc=now_utc,
         sec_filings=[],
-        macro_proxies=[],
-        calendar_events=[],
+        macro_proxies=build_macro_proxies(market, now_utc),
+        calendar_events=build_holiday_safe_calendar(now_utc, []),
     )
     news_resp = NewsResponse(
         updatedAt="2026/11/26 23:00:00 UTC+8",

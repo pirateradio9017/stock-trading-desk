@@ -2,11 +2,11 @@ name: Stock Trading Desk Pipeline & Cloud Sync
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "7 */2 * * *"
   workflow_dispatch:
     inputs:
       force_rebalance:
-        description: "Force structural rebalance outside 16:30 ET window"
+        description: "Force structural rebalance outside post-close research window"
         required: false
         default: "false"
         type: boolean
@@ -16,12 +16,17 @@ on:
         default: "true"
         type: boolean
 
+concurrency:
+  group: stock-desk-production
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,6 +44,9 @@ jobs:
 
       - name: Run research pipeline and publish KV (DESK_STATE)
         env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DESK_LLM_PROVIDER: deepseek
+          DEEPSEEK_MODEL: deepseek-flash
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -50,7 +58,7 @@ jobs:
           python -m src.pipeline $ARGS
 
       - name: Deploy Cloudflare Worker & SPA bundle
-        if: ${{ inputs.deploy_worker != 'false' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_worker == true }}
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

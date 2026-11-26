@@ -127,6 +127,23 @@ async def run_pipeline(
     if ts_now.tzinfo is None:
         ts_now = ts_now.replace(tzinfo=timezone.utc)
 
+    # CI runners are ephemeral: recover the durable accepted state before governance.
+    if publish_kv:
+        if not settings.cf_account_id or not settings.cf_api_token:
+            raise ValueError("Cloudflare credentials required before ingestion")
+        kv_id = os.getenv("CF_KV_NAMESPACE_ID", "").strip() or DEFAULT_CF_KV_NAMESPACE_ID
+        url = (f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
+               f"/storage/kv/namespaces/{kv_id}/values/state")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {settings.cf_api_token}"})
+        if response.status_code == 404:
+            if (target_dir / "state.json").exists():
+                raise ValueError("Remote state missing while local state exists; refusing divergent publication")
+        else:
+            response.raise_for_status()
+            previous = StateResponse.model_validate(response.json())
+            atomic_write_json(target_dir / "state.json", previous)
+
     bundle = await run_ingestion(now_utc=ts_now, include_screener=include_screener)
     research = await run_research_cycle(
         bundle,

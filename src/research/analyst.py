@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import httpx
 import logging
 import math
 import os
@@ -140,7 +142,7 @@ class SynthesisOutput:
 
     draft_state: StateResponse
     history_note: tuple[str, str, str]
-    engine_mode: Literal["gemini", "deterministic_fallback"]
+    engine_mode: Literal["gemini", "deepseek", "deterministic_fallback"]
     model_used: str
     fallback_reason: str = ""
 
@@ -209,6 +211,8 @@ def build_research_context(
             lines.append(
                 f"  {m.id} {m.title} | anchor={m.anchor_sym} | score={m.score} | first_seen={m.first_seen} | stocks={m.stocks}"
             )
+        for m in prev_state.mainlines:
+            lines.append(f"  上期论点 {m.anchor_sym}: {m.summary[:500]} | 验证节点: {m.watch_points[:300]}")
         lines.append("  上一期候补: " + "; ".join(f"{c.id}:{c.name}({c.tier})" for c in prev_state.candidates))
 
     lines.append("\n=== 3. 核心跨资产实测行情（禁止编造） ===")
@@ -307,7 +311,14 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
 3. **候补池与联动**：
    - `candidates` 必须恰好 6 条（C1..C6），覆盖 `upgrade`（准备升级）、`watch`（强化跟踪）、`demote`（弱化/淘汰）三类梯度，每条给出清晰的 `rule`（晋级/淘汰量化触发条件）与非空 `history_log`。
    - `linkage` 必须恰好 4 条，紧扣实测 6x6 相关系数与 30D 剪刀差（例如股债跷跷板 SPY/TLT、算力与大盘 SPY/NVDA、黄金避险 SPY/GLD、加密与高Beta流动性 NVDA/BTC），写清传导机理（`why`）与当下交易信号（`signal`）。
-4. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
+4. **研究输出结构**：
+   - headline 只说本轮最重要变化；plain_guide 用三句话分别解释事实、影响、下一步观察。
+   - 每条 summary 按“新增事实；较上期变化；传导假设；反证/不确定性”组织。没有新增证据就明确写“本轮无新增证据”，不能把旧闻改写成新催化。
+   - plain 解释为什么值得关注，不重复价格；watch_points 同时写验证条件和失效条件，不将价格涨跌直接等同于基本面逻辑证伪。
+   - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
+   - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
+   - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；不强行制造行业催化。
+5. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 
 
@@ -552,13 +563,27 @@ def build_deterministic_draft(
 
         source_url = _pick_url_for_keywords(bundle, spec["kws"], spec["fallback_url"])
         summary = (
-            f"板块篮子日均 {_fmt_pct(chg)}、5D {_fmt_pct(r5)}、20D {_fmt_pct(r20)}。"
+            f"【量价观察，非事件核验】板块篮子日均 {_fmt_pct(chg)}、5D {_fmt_pct(r5)}、20D {_fmt_pct(r20)}。"
             f"锚定标的 {anchor} 现报 {_fmt_num(a_price)}，"
             f"{'呈相对强势领跑格局' if bullish else ('处于深幅消化与去杠杆阶段' if bearish else '维持区间拉锯待催化')}。"
         )
+        old = next((m for m in (prev_state.mainlines if prev_state else []) if m.anchor_sym == anchor), None)
+        change = f"较上期评分变化 {score - old.score:+d} 分（启发式动量评分）。" if old else "首次纳入，尚无上期可比较。"
+        summary += "【变化】" + change
+        event = next((n for n in bundle.news.response.items if n.link == source_url), None)
+        filing = next((f for f in bundle.primary.sec_filings if f.url == source_url), None)
+        if filing:
+            summary += f"【已采集线索】{filing.sym} 的 {filing.form} 申报（{filing.filing_date}）；采集到申报索引不代表已核验正文或盈利影响。"
+        elif event:
+            summary += f"【已采集线索】{event.source}（{event.pubDate}）：{event.title}。该条为新闻线索，尚未完成原文交叉核验。"
+        else:
+            summary += "【证据缺口】本轮未取得可直接关联的事件线索，当前判断仅基于量价。"
+        summary += "【传导假设】" + chain.replace("|", "→") + "；价格强弱不证明订单、现金流或机构买入。"
+
         watch_points = (
-            f"锚定 {anchor}：放量站稳 {accel} 上方视为动能加速确认；"
-            f"若有效跌破 {flip} 则判定当前逻辑证伪，转入防守观察。"
+            f"锚定 {anchor}：{accel} / {flip} 为按价格比例生成的观察阈值，并非已验证技术支撑阻力。"
+            "【反证】观察突破后能否持续、关联标的是否同向；反向运行则降低短线假设信心。"
+            "【下一验证】下一交易日复核篮子相对强弱；取得公司公告后核对收入、订单及现金流，证据不足时保持观察。"
         )
         mainlines.append(
             _DraftMainline(
@@ -685,6 +710,32 @@ def build_deterministic_draft(
 # ---------------------------------------------------------------------------
 
 
+def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec: float = 120.0) -> ResearchDraft:
+    """Bounded paid request; validate JSON locally before accepting research."""
+    schema = json.dumps(ResearchDraft.model_json_schema(), ensure_ascii=False)
+    with httpx.Client(timeout=httpx.Timeout(timeout_sec, connect=15.0)) as client:
+        response = client.post("https://api.deepseek.com/chat/completions", headers={
+            "Authorization": "Bearer " + api_key,
+        }, json={
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT + "\nReturn only a JSON object matching this JSON Schema:\n" + schema},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": 12000,
+            "stream": False,
+        })
+        response.raise_for_status()
+        choice = response.json()["choices"][0]
+        if choice.get("finish_reason") != "stop":
+            raise ValueError("DeepSeek response incomplete")
+        draft = ResearchDraft.model_validate_json(choice["message"].get("content") or "")
+        if (len(draft.mainlines), len(draft.candidates), len(draft.linkage)) != (5, 6, 4):
+            raise ValueError("DeepSeek returned incorrect research card counts")
+        return draft
+
+
 def _call_gemini_sync(
     api_key: str,
     model_name: str,
@@ -766,9 +817,6 @@ def _ensure_rotation_assets(market: MarketSnapshot) -> list[RotationAsset]:
             )
         if len(assets) >= 12:
             break
-    if len(assets) < 5:
-        for sym in ("NVDA", "AAPL", "QQQ", "TLT", "XLP"):
-            assets.append(RotationAsset(sym=sym, name=SYMBOL_NAME_MAP.get(sym, sym), group="基准", r5=0.0, r20=0.0))
     return assets
 
 
@@ -907,11 +955,11 @@ def draft_to_state_response(
         calendar_events = [
             CalendarEvent(
                 day=et_today,
-                time="21:30 UTC+8",
+                time="待官方日历确认",
                 title="常规盘面与宏观日历跟踪",
                 tag="宏观观察",
                 tone="slate",
-                desc="当日无额外高优先级事件，聚焦量价结构与盘后公告。",
+                desc="未取得已核验的发布日程；此项为研究待办，不能据此判断当日没有重要事件。",
                 source_url="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
             )
         ]
@@ -962,19 +1010,29 @@ async def synthesize_research_state(
     api_key = settings.gemini_api_key
     model_chain = models or _resolve_gemini_models()
 
-    if use_llm and api_key:
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    provider = os.getenv("DESK_LLM_PROVIDER", "auto").strip().lower()
+    attempts = []
+    if deepseek_key and provider in ("auto", "deepseek"):
+        attempts.append(("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), deepseek_key, _call_deepseek_sync, 120.0))
+    if api_key and provider in ("auto", "gemini"):
+        attempts.extend(("gemini", m, api_key, _call_gemini_sync, timeout_sec) for m in model_chain[:2])
+    if use_llm and attempts:
         briefing = build_research_context(bundle, prev_state, decision)
         prompt = (
             "以下是最新实测全市场投研 Briefing，请严格遵循系统规范与 JSON Schema 输出深度因果研判：\n\n"
             + briefing
         )
         last_err = ""
-        for model_name in model_chain:
+        for engine, model_name, key, call, call_timeout in attempts:
             try:
                 draft = await asyncio.wait_for(
-                    asyncio.to_thread(_call_gemini_sync, api_key, model_name, prompt, timeout_sec),
-                    timeout=timeout_sec + 5.0,
+                    asyncio.to_thread(call, key, model_name, prompt, call_timeout),
+                    timeout=call_timeout + 5.0,
                 )
+                allowed_urls = {url for _, url in _collect_context_urls(bundle)}
+                if any(m.source_url not in allowed_urls for m in draft.mainlines):
+                    raise ValueError("Model returned a source outside the supplied evidence set")
                 draft_state = draft_to_state_response(draft, bundle, decision)
                 return SynthesisOutput(
                     draft_state=draft_state,
@@ -983,16 +1041,20 @@ async def synthesize_research_state(
                         draft.history_note.detail,
                         draft.history_note.lesson,
                     ),
-                    engine_mode="gemini",
+                    engine_mode=engine,
                     model_used=model_name,
                 )
             except Exception as exc:
-                last_err = f"{model_name}: {exc}"
-                logger.warning("Gemini synthesis failed on %s: %s", model_name, exc)
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status is None:
+                    match = re.search(r"\b(401|402|429|500|502|503|504)\b", str(exc))
+                    status = match.group(1) if match else ""
+                last_err = f"{engine}/{model_name}: {type(exc).__name__} {status}"
+                logger.warning("Synthesis failed on %s/%s: %s", engine, model_name, type(exc).__name__)
 
-        fallback_reason = f"Gemini 调用失败回退定量引擎 ({last_err})"
+        fallback_reason = f"模型调用失败回退定量引擎 ({last_err})"
     else:
-        fallback_reason = "未配置 GEMINI_API_KEY 或已禁用 LLM" if not api_key else "显式使用定量引擎"
+        fallback_reason = "未配置可用模型或已禁用 LLM"
 
     det_draft = build_deterministic_draft(bundle, prev_state, decision)
     det_state = draft_to_state_response(det_draft, bundle, decision)

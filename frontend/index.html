@@ -1049,6 +1049,11 @@
         return map;
       }
 
+      function researchParagraphs(value) {
+        return String(value || "").split(/(?=【[^】]+】)/).filter(Boolean)
+          .map(part => `<p>${escapeHtml(part)}</p>`).join("");
+      }
+
       function destroyChart(key) {
         if (STORE.charts[key]) {
           try {
@@ -1205,8 +1210,8 @@
       }
 
       function buildRulerHtml(m, qm) {
-        const accel = finiteOrNull(Number(m.accel));
-        const flip = finiteOrNull(Number(m.flip));
+        const accel = finiteOrNull(m.accel);
+        const flip = finiteOrNull(m.flip);
         const anchor = m.anchor_sym || "";
         const q = qm[anchor] || null;
         const cur = q ? finiteOrNull(q.price) : null;
@@ -1219,13 +1224,13 @@
         if (accel !== null && flip !== null && accel >= flip) {
           leftVal = flip;
           rightVal = accel;
-          leftLabel = `反转位 $${fmtLevel(flip)}`;
-          rightLabel = `加速位 $${fmtLevel(accel)}`;
+          leftLabel = `反向观察 $${fmtLevel(flip)}`;
+          rightLabel = `顺向观察 $${fmtLevel(accel)}`;
         } else {
           leftVal = accel ?? 0;
           rightVal = flip ?? 0;
-          leftLabel = `加速位 $${fmtLevel(accel)}`;
-          rightLabel = `反转位 $${fmtLevel(flip)}`;
+          leftLabel = `顺向观察 $${fmtLevel(accel)}`;
+          rightLabel = `反向观察 $${fmtLevel(flip)}`;
         }
 
         let ratio = 0.5;
@@ -1263,6 +1268,7 @@
         }
         const qm = quoteMap();
 
+        Object.keys(STORE.charts).filter(k => k.startsWith("ml-spark-")).forEach(destroyChart);
         container.innerHTML = STORE.state.mainlines.map((m, idx) => {
           const steps = String(m.chain || "")
             .split(/\s*(?:\||->|→)\s*/)
@@ -1315,13 +1321,13 @@
 
               <div class="ml-copy">
                 <p><strong>白话翻译：</strong>${escapeHtml(m.plain)}</p>
-                <p><strong>核心逻辑：</strong>${escapeHtml(m.summary)}</p>
-                <p><strong>盯盘要点：</strong>${escapeHtml(m.watch_points)}</p>
+                <div><strong>研究拆解：</strong>${researchParagraphs(m.summary)}</div>
+                <div><strong>验证计划：</strong>${researchParagraphs(m.watch_points)}</div>
               </div>
 
               <div class="ml-foot">
                 <span style="color:var(--ink-muted);">锚定标的：${escapeHtml(m.anchor_sym)}</span>
-                ${srcUrl ? `<a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">验证信源 ↗</a>` : ""}
+                ${srcUrl ? `<a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">来源／查阅入口 ↗</a>` : ""}
               </div>
             </article>
           `;
@@ -1797,14 +1803,24 @@
         renderChartsForTab(STORE.activeTab);
       }
 
+      const requestVersions = Object.create(null);
       async function fetchJsonSafe(url) {
-        const resp = await fetch(url, { cache: "no-store" });
+        const key = url.split("?")[0];
+        const version = requestVersions[key] = (requestVersions[key] || 0) + 1;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+        try {
+        const resp = await fetch(url, { cache: "no-store", signal: controller.signal });
         if (!resp.ok) {
           const err = new Error(`HTTP ${resp.status}`);
           err.status = resp.status;
           throw err;
         }
-        return await resp.json();
+        const data = await resp.json();
+        if (version !== requestVersions[key]) throw Object.assign(new Error("Superseded request"), { superseded: true });
+        if (!data || typeof data !== "object") throw new Error("Invalid API payload");
+        return data;
+        } finally { clearTimeout(timer); }
       }
 
       async function fetchNewsOnly(force) {
@@ -1816,6 +1832,7 @@
           STORE.news = data;
           STORE.newsError = "";
         } catch (err) {
+          if (err.superseded) return;
           STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
         } finally {
           if (btn) btn.disabled = false;
@@ -1823,7 +1840,10 @@
         }
       }
 
+      let refreshing = false;
       async function fetchAll(force) {
+        if (refreshing) return;
+        refreshing = true;
         const btn = document.getElementById("btnRefreshAll");
         if (btn) btn.disabled = true;
         const isInitialLoad = !force && !STORE.state && !STORE.live;
@@ -1845,9 +1865,9 @@
           renderLinkage();
           renderMacro();
           renderChartsForTab(STORE.activeTab);
-          if (!isInitialLoad) {
-            if (!stateOk && !liveOk) {
-              updateSyncPill(false, "同步异常 · 请稍后重试");
+          {
+            if (!stateOk || !liveOk) {
+              updateSyncPill(false, "部分数据同步失败 · 显示已有结果");
             } else {
               updateSyncPill(false, "");
             }
@@ -1889,6 +1909,7 @@
             renderNews();
           },
           (err) => {
+            if (err.superseded) return;
             STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
             renderNews();
           }
@@ -1896,13 +1917,14 @@
 
         await Promise.allSettled([liveP, stateP, newsP]);
         if (isInitialLoad) {
-          if (!stateOk && !liveOk) {
-            updateSyncPill(false, "同步异常 · 请稍后重试");
+          if (!stateOk || !liveOk) {
+            updateSyncPill(false, "部分数据同步失败 · 显示已有结果");
           } else {
             updateSyncPill(false, "");
           }
         }
         if (btn) btn.disabled = false;
+        refreshing = false;
       }
 
       document.querySelectorAll(".tab-btn").forEach((btn) => {

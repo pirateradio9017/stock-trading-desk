@@ -238,8 +238,6 @@ async def api_state(force: str | None = Query(default=None)) -> Response:
             status_code=503,
             detail={"ok": False, "error": "Research state not initialized yet; run pipeline first"},
         )
-    if _is_force(force):
-        state = state.model_copy(update={"serverSyncedAt": format_cn_timestamp()})
     return _json_response(state)
 
 
