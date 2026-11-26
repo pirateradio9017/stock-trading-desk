@@ -678,6 +678,13 @@
       transition: width 0.2s ease;
     }
 
+    .radar-note, .radar-toolbar { font-size:12px; color:var(--ink-muted); line-height:1.7; }
+    .radar-toolbar { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+    .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
+    .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
+    .radar-detail { margin-top:14px; padding:15px; border-radius:12px; background:var(--paper-soft); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+    .radar-detail p { margin:5px 0; }
     .macro-metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -766,7 +773,14 @@
       .kpi-grid,
       .cand-grid,
       .linkage-grid,
-      .macro-metrics {
+      .radar-note, .radar-toolbar { font-size:12px; color:var(--ink-muted); line-height:1.7; }
+    .radar-toolbar { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+    .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
+    .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
+    .radar-detail { margin-top:14px; padding:15px; border-radius:12px; background:var(--paper-soft); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+    .radar-detail p { margin:5px 0; }
+    .macro-metrics {
         grid-template-columns: 1fr;
       }
       .tab-btn {
@@ -881,10 +895,15 @@
 
       <section id="panel-macro" class="tab-panel">
         <div class="ed-card">
-          <h2 class="section-title"><span>五维宏观顺逆风雷达（0–100）</span></h2>
+          <h2 class="section-title"><span>五维宏观温度计</span><span id="radarRegime" class="badge tone-slate">正在读取</span></h2>
+          <p class="radar-note">外圈 100 = 代理指标较顺风，内圈 0 = 较逆风。评分为规则观察值，不是收益概率。</p>
+          <div class="radar-toolbar"><span id="radarTime"></span><button type="button" id="radarReplay" class="tab-btn">重播动画</button></div>
           <div class="chart-box-tall">
-            <canvas id="macroRadarCanvas"></canvas>
+            <canvas id="macroRadarCanvas" role="img" aria-label="五维宏观顺逆风评分；可使用下方按钮阅读各维度"></canvas>
           </div>
+          <div id="radarDimensions" class="radar-dimensions" aria-label="选择维度"></div>
+          <div id="radarDetail" class="radar-detail" aria-live="polite"></div>
+          <p id="radarComparison" class="radar-note"></p>
         </div>
 
         <div class="ed-card">
@@ -1074,7 +1093,7 @@
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
         config.options = config.options || {};
-        config.options.animation = false;
+        config.options.animation = config.options.animation ?? false;
         config.options.responsive = true;
         config.options.maintainAspectRatio = false;
         const instance = new Chart(ctx, config);
@@ -1682,35 +1701,66 @@
           : `<div class="empty-box">近期暂无关键日程</div>`;
       }
 
-      function renderMacroRadar() {
-        if (!STORE.state || !Array.isArray(STORE.state.macro) || !STORE.state.macro.length) return;
-        const macro = STORE.state.macro;
-        makeOrReplaceChart("macroRadarCanvas", {
-          type: "radar",
-          data: {
-            labels: macro.map((m) => m.title),
-            datasets: [{
-              label: "宏观健康度评分",
-              data: macro.map((m) => Math.max(0, Math.min(100, Number(m.score) || 0))),
-              borderColor: "#2E6F54",
-              backgroundColor: "rgba(46, 111, 84, 0.18)",
-              pointBackgroundColor: "#2E6F54",
-              borderWidth: 2,
-            }],
-          },
-          options: {
-            plugins: { legend: { display: false } },
-            scales: {
-              r: {
-                min: 0,
-                max: 100,
-                ticks: { stepSize: 25, backdropColor: "transparent", font: { size: 10 } },
-                pointLabels: { font: { size: 11 } },
-              },
-            },
-          },
+      const RADAR_AXES = [
+        ["rate", "利率与美债", "根据10年美债收益率及TLT五日变化分档；MOVE为辅助观察。"],
+        ["credit", "信用债相对强弱", "根据HYG与LQD五日收益差及HYG日涨跌分档；不等于实际企业借款利率。"],
+        ["sentiment", "波动与风险偏好", "根据VIX水平分档；BTC为辅助观察，不代表暗池资金。"],
+        ["compute", "电力与云基建动量", "IREN、XLU五日收益均值×2.5＋58，再限制评分范围；不是算力租金数据。"],
+        ["semi_demand", "半导体价格动量", "NVDA、SOXX五日收益均值×2.5＋60，再限制评分范围；不是芯片订单数据。"]
+      ];
+      let radarSelected = "rate", radarPrevious = null, radarSnapshot = null;
+      try { radarSnapshot = JSON.parse(localStorage.getItem("desk-radar-v1") || "null"); } catch (_) {}
+      function radarRows() {
+        return RADAR_AXES.map(([id, label, rule]) => {
+          const m = (STORE.state?.macro || []).find(x => x.chain_id === id);
+          const valid = m && Number.isFinite(m.score) && m.score >= 0 && m.score <= 100 && !String(m.state).includes("DATA_PENDING");
+          return {id, label, rule, m, score: valid ? m.score : null};
         });
       }
+      function showRadarDetail(id) {
+        radarSelected = id;
+        const r = radarRows().find(x => x.id === id);
+        if (!r) return;
+        const m = r.m || {};
+        document.querySelectorAll('[data-radar-id]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.radarId === id)));
+        const url = safeHttpUrl(m.source_url);
+        document.getElementById('radarDetail').innerHTML = `<strong>${escapeHtml(r.label)} · ${r.score === null ? "数据待补充" : r.score + "/100"}</strong>
+          <p>${escapeHtml(m.plain || "本轮暂无可用观测，不以零分代替缺失。")}</p>
+          <p><strong>观测：</strong>${escapeHtml(m.m1_label || "—")} ${escapeHtml(m.m1_val || "—")} · ${escapeHtml(m.m1_date || "")}<br>${escapeHtml(m.m2_label || "—")} ${escapeHtml(m.m2_val || "—")} · ${escapeHtml(m.m2_date || "")}</p>
+          <p><strong>评分依据：</strong>${escapeHtml(r.rule)}</p><p><strong>需留意：</strong>${escapeHtml(m.concern || "等待进一步证据")}</p>
+          ${url ? `<a class="src-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">来源／核验入口 ↗</a>` : ""}`;
+      }
+      function renderMacroRadar(replay = false) {
+        const rows = radarRows();
+        const timestamp = STORE.state?.serverSyncedAt || "";
+        if (timestamp && radarSnapshot?.time !== timestamp) {
+          if (radarSnapshot?.time && Array.isArray(radarSnapshot.scores) && radarSnapshot.scores.length === 5 && radarSnapshot.scores.every(v => v === null || (Number.isFinite(v) && v >= 0 && v <= 100))) radarPrevious = radarSnapshot;
+          radarSnapshot = {time: timestamp, scores: rows.map(r => r.score)};
+          try { localStorage.setItem("desk-radar-v1", JSON.stringify(radarSnapshot)); } catch (_) {}
+        }
+        const valid = rows.filter(r => r.score !== null);
+        const strongest = [...valid].sort((a,b) => b.score-a.score)[0];
+        const weakest = [...valid].sort((a,b) => a.score-b.score)[0];
+        document.getElementById('radarRegime').textContent = valid.length < 5 ? "部分数据待补充" : (strongest.score - weakest.score >= 25 ? "维度分化" : strongest.score < 40 ? "普遍承压" : weakest.score >= 60 ? "整体偏顺风" : "顺逆风交织");
+        document.getElementById('radarTime').textContent = "研究快照：" + (timestamp || "等待数据");
+        document.getElementById('radarComparison').textContent = radarPrevious ? "虚线为本浏览器上次观察（" + radarPrevious.time + "），并非固定上一交易日。" : "首次观察暂无对比；后续研究更新后，可与本浏览器上次观察比较。";
+        document.getElementById('radarDimensions').innerHTML = rows.map(r => `<button type="button" data-radar-id="${r.id}" aria-pressed="${r.id === radarSelected}">${escapeHtml(r.label)} · ${r.score === null ? "待补充" : r.score}</button>`).join('');
+        document.querySelectorAll('[data-radar-id]').forEach(b => b.onclick = () => showRadarDetail(b.dataset.radarId));
+        showRadarDetail(radarSelected);
+        const datasets = [{label:"本期代理评分",data:rows.map(r=>r.score),borderColor:"#5d7580",backgroundColor:"rgba(93,117,128,.16)",pointBackgroundColor:"#354951",pointBorderColor:"#5d7580",pointBorderWidth:3,pointRadius:5,pointHoverRadius:8,borderWidth:3,spanGaps:false}];
+        if (radarPrevious) datasets.push({label:"上次观察",data:radarPrevious.scores,borderColor:"#b79c78",backgroundColor:"transparent",borderDash:[5,5],pointRadius:2,borderWidth:1.5,spanGaps:false});
+        const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const existing = STORE.charts.macroRadarCanvas;
+        if (existing && !replay) { existing.data.datasets = datasets; existing.update(reduced ? 'none' : undefined); return; }
+        makeOrReplaceChart('macroRadarCanvas', {
+          type:'radar', data:{labels:rows.map(r=>r.label),datasets},
+          options:{animation:reduced ? false : {duration:850,easing:'easeOutQuart'},
+            onClick:(event,elements)=>{if(elements.length) showRadarDetail(rows[elements[0].index].id);},
+            plugins:{legend:{display:!!radarPrevious,position:'bottom'},tooltip:{callbacks:{afterLabel:ctx=>rows[ctx.dataIndex].m?.wind || ""}}},
+            scales:{r:{min:0,max:100,ticks:{stepSize:25,backdropColor:'transparent',font:{size:10}},grid:{color:'#e0dbd3'},angleLines:{color:'#e0dbd3'},pointLabels:{font:{size:innerWidth < 500 ? 10 : 13,weight:'bold'},color:'#363c3c'}}}}
+        });
+      }
+      document.getElementById('radarReplay').onclick = () => renderMacroRadar(true);
 
       function renderNews() {
         const metaBar = document.getElementById("newsMetaBar");
