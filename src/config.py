@@ -359,16 +359,19 @@ def _easter_sunday(year: int) -> date:
 
 
 def get_us_market_holidays(year: int) -> dict[date, str]:
-    """Return NYSE observed full-day holidays falling within the given calendar year."""
+    """Return NYSE observed full-day holidays falling within the given calendar year.
+
+    Per NYSE Rule 7.2, when a holiday falls on a Saturday, the Exchange closes on the
+    preceding Friday unless that Friday is the end of a monthly or yearly accounting
+    period (specifically Dec 31 when Jan 1 of the following year falls on a Saturday,
+    such as 2021-12-31 and 2027-12-31, on which NYSE remains open). Sunday holidays
+    are observed on the following Monday (e.g., 2023-01-02).
+    """
     holidays: dict[date, str] = {}
 
     nyd_obs = _observed_holiday(date(year, 1, 1))
     if nyd_obs.year == year:
         holidays[nyd_obs] = "New Year's Day"
-
-    next_nyd_obs = _observed_holiday(date(year + 1, 1, 1))
-    if next_nyd_obs.year == year:
-        holidays[next_nyd_obs] = "New Year's Day (Observed)"
 
     holidays[_nth_weekday(year, 1, 0, 3)] = "Martin Luther King Jr. Day"
     holidays[_nth_weekday(year, 2, 0, 3)] = "Washington's Birthday"
@@ -406,6 +409,7 @@ def is_us_trading_day(d: date) -> bool:
 
 
 def _to_utc(dt: datetime | None) -> datetime:
+    """Normalize an instant to UTC; naive datetime objects are interpreted as UTC."""
     if dt is None:
         return datetime.now(TZ_UTC)
     if dt.tzinfo is None:
@@ -416,7 +420,10 @@ def _to_utc(dt: datetime | None) -> datetime:
 def get_market_session(
     dt: datetime | None = None,
 ) -> Literal["PRE_MARKET", "INTRADAY", "AFTER_HOURS", "OFF_HOURS", "HOLIDAY"]:
-    """Classify an instant into the live US market session in America/New_York."""
+    """Classify an instant into the live US market session in America/New_York.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
     et = _to_utc(dt).astimezone(TZ_ET)
     if is_us_market_holiday(et.date()):
         return "HOLIDAY"
@@ -442,7 +449,10 @@ def get_research_window(
     "PRE_MARKET",
     "OFF_HOURS",
 ]:
-    """Classify an instant into the research state-machine governance window."""
+    """Classify an instant into the research state-machine governance window.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
     et = _to_utc(dt).astimezone(TZ_ET)
     if is_us_market_holiday(et.date()):
         return "HOLIDAY_LOCK"
@@ -461,15 +471,24 @@ def get_research_window(
 
 
 def format_cn_timestamp(dt: datetime | None = None) -> str:
-    """Format timestamp in Asia/Shanghai as 'YYYY/MM/DD HH:MM:SS UTC+8'."""
+    """Format timestamp in Asia/Shanghai as 'YYYY/MM/DD HH:MM:SS UTC+8'.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
     return _to_utc(dt).astimezone(TZ_CN).strftime("%Y/%m/%d %H:%M:%S UTC+8")
 
 
 def format_et_short(dt: datetime | None = None) -> str:
-    """Format timestamp in America/New_York as 'MM-DD HH:MM ET'."""
+    """Format timestamp in America/New_York as 'MM-DD HH:MM ET'.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
     return _to_utc(dt).astimezone(TZ_ET).strftime("%m-%d %H:%M ET")
 
 
 def format_utc_iso(dt: datetime | None = None) -> str:
-    """Format timestamp in UTC as 'YYYY-MM-DDTHH:MM:SSZ'."""
+    """Format timestamp in UTC as 'YYYY-MM-DDTHH:MM:SSZ'.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
     return _to_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")

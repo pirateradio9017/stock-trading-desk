@@ -23,13 +23,45 @@ CandidateTier = Literal["upgrade", "watch", "demote"]
 MacroChainId = Literal["rate", "credit", "sentiment", "compute", "semi_demand"]
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_CLEAN_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2})?.*)?$")
+_CLEAN_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})"
+    r"(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?"
+    r"(?:\s*(?:Z|[+-]\d{2}:?\d{2}|UTC(?:[+-]\d{1,2}(?::\d{2})?)?|ET|EST|EDT))?"
+    r"(?:\s*·.*)?)?$"
+)
+_SYNCED_TS_RE = re.compile(
+    r"^(?:(\d{4})-(\d{2})-(\d{2})|(\d{4})/(\d{2})/(\d{2}))"
+    r"(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?"
+    r"(?:\s*(?:Z|[+-]\d{2}:?\d{2}|UTC(?:[+-]\d{1,2}(?::\d{2})?)?|ET|EST|EDT))?"
+    r"(?:\s*·.*)?)?$"
+)
+_ET_SHORT_TS_RE = re.compile(
+    r"^(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?"
+    r"(?:\s+(?:ET|EST|EDT|UTC(?:[+-]\d{1,2}(?::\d{2})?)?)(?:\s+.*)?)?$"
+)
 
 
 def _reject_gviz(v: str) -> str:
-    if "Date(" in v:
+    if "date(" in v.lower():
         raise ValueError("Google gviz Date(...) syntax is forbidden")
     return v
+
+
+def _validate_hms(
+    hour_str: str | None,
+    minute_str: str | None,
+    second_str: str | None,
+) -> None:
+    if hour_str is None or minute_str is None:
+        return
+    hh = int(hour_str)
+    mm = int(minute_str)
+    ss = int(second_str) if second_str is not None else 0
+    if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+        raise ValueError(
+            f"Time component out of bounds: {hour_str}:{minute_str}"
+            + (f":{second_str}" if second_str is not None else "")
+        )
 
 
 def _validate_iso_date(v: object) -> str:
@@ -56,6 +88,46 @@ def _validate_clean_timestamp(v: str) -> str:
     if not m:
         raise ValueError(f"Expected clean YYYY-MM-DD timestamp, got {s!r}")
     date.fromisoformat(m.group(1))
+    _validate_hms(m.group(2), m.group(3), m.group(4))
+    return s
+
+
+def _validate_synced_timestamp(v: str) -> str:
+    s = v.strip()
+    if not s:
+        raise ValueError("Timestamp must not be empty")
+    _reject_gviz(s)
+    m = _SYNCED_TS_RE.match(s)
+    if not m:
+        raise ValueError(f"Expected YYYY/MM/DD or YYYY-MM-DD timestamp, got {s!r}")
+    if m.group(1) is not None:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        year, month, day = int(m.group(4)), int(m.group(5)), int(m.group(6))
+    date(year, month, day)
+    _validate_hms(m.group(7), m.group(8), m.group(9))
+    return s
+
+
+def _validate_et_timestamp(v: str) -> str:
+    s = v.strip()
+    if not s:
+        raise ValueError("Timestamp must not be empty")
+    _reject_gviz(s)
+    m_full = _CLEAN_TS_RE.match(s)
+    if m_full:
+        date.fromisoformat(m_full.group(1))
+        _validate_hms(m_full.group(2), m_full.group(3), m_full.group(4))
+        return s
+    m_et = _ET_SHORT_TS_RE.match(s)
+    if not m_et:
+        raise ValueError(
+            f"Expected 'MM-DD HH:MM ET...' or 'YYYY-MM-DD...' timestamp, got {s!r}"
+        )
+    month, day = int(m_et.group(1)), int(m_et.group(2))
+    # Use leap year 2024 to validate calendar month/day without rejecting Feb 29.
+    date(2024, month, day)
+    _validate_hms(m_et.group(3), m_et.group(4), m_et.group(5))
     return s
 
 
@@ -66,22 +138,33 @@ def _validate_no_gviz_str(v: str) -> str:
     return _reject_gviz(s)
 
 
+def _check_http_url(s: str) -> str:
+    if any(ch.isspace() or ord(ch) < 32 for ch in s):
+        raise ValueError(f"URL must not contain whitespace or control characters: {s!r}")
+    parsed = urlparse(s)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.hostname:
+        raise ValueError(f"Expected valid http(s) URL with hostname, got {s!r}")
+    return s
+
+
 def _validate_optional_http_url(v: str) -> str:
     s = v.strip()
     if not s:
         return ""
-    parsed = urlparse(s)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(f"Expected http(s) URL, got {s!r}")
-    return s
+    return _check_http_url(s)
 
 
 def _validate_required_http_url(v: str) -> str:
     s = v.strip()
-    parsed = urlparse(s)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(f"Expected non-empty http(s) URL, got {s!r}")
-    return s
+    if not s:
+        raise ValueError("Expected non-empty http(s) URL, got ''")
+    return _check_http_url(s)
+
+
+def _reject_bool_float(v: object) -> object:
+    if isinstance(v, bool):
+        raise ValueError("Boolean value is not allowed for float field")
+    return v
 
 
 def _validate_finite_float(v: float) -> float:
@@ -92,10 +175,16 @@ def _validate_finite_float(v: float) -> float:
 
 IsoDateStr = Annotated[str, BeforeValidator(_validate_iso_date)]
 CleanTimestampStr = Annotated[str, AfterValidator(_validate_clean_timestamp)]
+SyncedTimestampStr = Annotated[str, AfterValidator(_validate_synced_timestamp)]
+EtTimestampStr = Annotated[str, AfterValidator(_validate_et_timestamp)]
 NoGvizStr = Annotated[str, AfterValidator(_validate_no_gviz_str)]
 OptionalHttpUrl = Annotated[str, AfterValidator(_validate_optional_http_url)]
 RequiredHttpUrl = Annotated[str, AfterValidator(_validate_required_http_url)]
-FiniteFloat = Annotated[float, AfterValidator(_validate_finite_float)]
+FiniteFloat = Annotated[
+    float,
+    BeforeValidator(_reject_bool_float),
+    AfterValidator(_validate_finite_float),
+]
 
 
 class _DeskModel(BaseModel):
@@ -105,16 +194,10 @@ class _DeskModel(BaseModel):
 class HealthResponse(_DeskModel):
     ok: bool = True
     version: str = Field(default="2.0.0", min_length=1)
-    serverTimeUtc: NoGvizStr = Field(min_length=1)
-    stateUpdatedAt: str | None = None
+    serverTimeUtc: CleanTimestampStr
+    stateUpdatedAt: CleanTimestampStr | None = None
     newsCount: int = Field(default=0, ge=0)
     quotesCount: int = Field(default=0, ge=0)
-
-    @model_validator(mode="after")
-    def _check_optional_state_ts(self) -> HealthResponse:
-        if self.stateUpdatedAt is not None:
-            _reject_gviz(self.stateUpdatedAt)
-        return self
 
 
 class QuoteItem(_DeskModel):
@@ -127,12 +210,12 @@ class QuoteItem(_DeskModel):
     r5: FiniteFloat | None = None
     r20: FiniteFloat | None = None
     source: str = Field(default="yahoo_v8", min_length=1)
-    tsUtc: NoGvizStr = Field(min_length=1)
+    tsUtc: CleanTimestampStr
 
 
 class LiveResponse(_DeskModel):
-    updatedAt: NoGvizStr = Field(min_length=1)
-    updatedAtEt: NoGvizStr = Field(min_length=1)
+    updatedAt: SyncedTimestampStr
+    updatedAtEt: EtTimestampStr
     marketSession: MarketSession
     count: int = Field(ge=0)
     quotes: list[QuoteItem] = Field(default_factory=list)
@@ -147,8 +230,8 @@ class LiveResponse(_DeskModel):
 
 
 class MetaInfo(_DeskModel):
-    updated_at: NoGvizStr = Field(min_length=1, max_length=120)
-    updated_at_short: NoGvizStr = Field(min_length=1, max_length=40)
+    updated_at: EtTimestampStr = Field(min_length=1, max_length=120)
+    updated_at_short: EtTimestampStr = Field(min_length=1, max_length=40)
     badge: str = Field(min_length=1)
     headline: str = Field(min_length=1)
     plain_guide: str = Field(min_length=1)
@@ -179,6 +262,12 @@ class MainlineItem(_DeskModel):
     summary: str = Field(min_length=1)
     watch_points: str = Field(min_length=1)
     source_url: OptionalHttpUrl = ""
+
+    @model_validator(mode="after")
+    def _check_directional_ruler(self) -> MainlineItem:
+        if self.accel == self.flip:
+            raise ValueError("accel and flip must differ for a non-zero directional ruler")
+        return self
 
 
 class CandidateItem(_DeskModel):
@@ -265,14 +354,13 @@ class LinkageTrend(_DeskModel):
 
     @model_validator(mode="after")
     def _check_series_lengths(self) -> LinkageTrend:
-        if self.labels:
-            expected_len = len(self.labels)
-            for item in self.series:
-                if len(item.values) != expected_len:
-                    raise ValueError(
-                        f"Series {item.sym!r} values length ({len(item.values)}) "
-                        f"!= labels length ({expected_len})"
-                    )
+        expected_len = len(self.labels)
+        for item in self.series:
+            if len(item.values) != expected_len:
+                raise ValueError(
+                    f"Series {item.sym!r} values length ({len(item.values)}) "
+                    f"!= labels length ({expected_len})"
+                )
         return self
 
 
@@ -298,13 +386,13 @@ class AnalyticsData(_DeskModel):
             for col_idx, val in enumerate(row):
                 if not (-1.0001 <= val <= 1.0001):
                     raise ValueError(
-                        f"corrMatrix[{row_idx}][{col_idx}]={val} outside [-1.0, 1.0]"
+                        f"corrMatrix[{row_idx}][{col_idx}]={val} outside [-1.0001, 1.0001]"
                     )
         return self
 
 
 class StateResponse(_DeskModel):
-    serverSyncedAt: NoGvizStr = Field(min_length=1)
+    serverSyncedAt: SyncedTimestampStr
     meta: MetaInfo
     mainlines: list[MainlineItem] = Field(default_factory=list)
     candidates: list[CandidateItem] = Field(default_factory=list)
@@ -321,12 +409,12 @@ class NewsItem(_DeskModel):
     summary: str = ""
     tag: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    pubDate: NoGvizStr = Field(min_length=1)
+    pubDate: CleanTimestampStr
     link: RequiredHttpUrl
 
 
 class NewsResponse(_DeskModel):
-    updatedAt: NoGvizStr = Field(min_length=1)
+    updatedAt: SyncedTimestampStr
     count: int = Field(ge=0)
     items: list[NewsItem] = Field(default_factory=list)
 

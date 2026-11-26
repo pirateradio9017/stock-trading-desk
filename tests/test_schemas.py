@@ -529,10 +529,232 @@ def test_load_settings_and_holiday_edge_cases(monkeypatch: pytest.MonkeyPatch) -
     assert custom.log_level == "DEBUG"
     assert str(custom.data_dir).endswith("desk_data")
 
-    # Observed Dec 31 when Jan 1 of next year is Saturday (2028-01-01 is Saturday -> 2027-12-31)
-    assert config.is_us_market_holiday(date(2027, 12, 31)) is True
+    # Per NYSE Rule 7.2, when Jan 1 falls on a Saturday (2022-01-01, 2028-01-01),
+    # the preceding Friday Dec 31 (end of monthly/yearly accounting period) is NOT a holiday.
+    assert config.is_us_market_holiday(date(2021, 12, 31)) is False
+    assert config.is_us_market_holiday(date(2027, 12, 31)) is False
+    assert config.is_us_trading_day(date(2021, 12, 31)) is True
+    assert config.is_us_trading_day(date(2027, 12, 31)) is True
+    assert config.is_us_market_holiday(date(2023, 1, 2)) is True
+    assert config.is_us_market_holiday(date(2026, 7, 3)) is True
     assert config.is_us_market_holiday(date(2021, 6, 18)) is False
     assert config.is_us_market_holiday(date(2022, 6, 20)) is True
+
+
+def test_linkage_trend_empty_labels_rejects_nonempty_series() -> None:
+    empty = LinkageTrend.model_validate({"labels": [], "series": []})
+    assert empty.labels == []
+    assert empty.series == []
+
+    empty_series_vals = LinkageTrend.model_validate(
+        {"labels": [], "series": [{"sym": "XLP", "label": "防御消费 XLP", "values": []}]}
+    )
+    assert len(empty_series_vals.series) == 1
+
+    with pytest.raises(ValidationError):
+        LinkageTrend.model_validate(
+            {
+                "labels": [],
+                "series": [
+                    {"sym": "XLP", "label": "X", "values": [0.0, 1.0]},
+                    {"sym": "TLT", "label": "T", "values": [0.0]},
+                ],
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        LinkageTrend.model_validate(
+            {
+                "labels": [],
+                "series": [{"sym": "XLP", "label": "X", "values": [0.0]}],
+            }
+        )
+
+
+def test_strict_url_validation_rejects_hostless_and_control_chars() -> None:
+    bad_urls = (
+        "https://:8080/a",
+        "https://user:pass@/a",
+        "https:///path",
+        "https://example.com/a\nb",
+        "https://example.com/a b",
+        "https://example.com/\x07",
+    )
+    sample_news = {
+        "event_id": "sha1-000000000001",
+        "title": "测试快讯",
+        "tag": "M1 算力",
+        "source": "华尔街见闻",
+        "pubDate": "2026-11-26 18:15 UTC+8",
+    }
+    for bad_url in bad_urls:
+        with pytest.raises(ValidationError):
+            NewsItem.model_validate({**sample_news, "link": bad_url})
+        with pytest.raises(ValidationError):
+            MainlineItem.model_validate(_sample_mainline(source_url=bad_url))
+
+    valid_localhost = NewsItem.model_validate(
+        {**sample_news, "link": "https://localhost:8787/api/health"}
+    )
+    assert valid_localhost.link == "https://localhost:8787/api/health"
+
+
+def test_strict_timestamp_and_case_insensitive_gviz() -> None:
+    # HealthResponse: CleanTimestampStr on serverTimeUtc and optional stateUpdatedAt
+    ok_health = HealthResponse.model_validate(
+        {"serverTimeUtc": "2026-11-26T10:30:00Z", "stateUpdatedAt": None}
+    )
+    assert ok_health.stateUpdatedAt is None
+
+    for bad_health_ts in (
+        "   ",
+        "",
+        "not-a-timestamp",
+        "2026-02-29 10:00",
+        "2026-11-26 99:99",
+        "2026-11-26 date(2026,10,26)",
+    ):
+        with pytest.raises(ValidationError):
+            HealthResponse.model_validate({"serverTimeUtc": bad_health_ts})
+        with pytest.raises(ValidationError):
+            HealthResponse.model_validate(
+                {"serverTimeUtc": "2026-11-26T10:30:00Z", "stateUpdatedAt": bad_health_ts}
+            )
+
+    # HistoryEntry, NewsItem, QuoteItem: reject invalid HH:MM:SS, invalid dates, lowercase date(
+    for bad_ts in (
+        "2026-11-26 99:99",
+        "2026-11-26 24:00",
+        "2026-11-26 10:60",
+        "2026-11-26 10:30:99",
+        "2026-02-29 10:00",
+        "not-a-timestamp",
+        "2026-11-26 date(2026,10,26)",
+    ):
+        with pytest.raises(ValidationError):
+            HistoryEntry.model_validate(
+                {
+                    "time": bad_ts,
+                    "type": "防抖锁定",
+                    "tone": "slate",
+                    "title": "Test",
+                    "detail": "Detail",
+                }
+            )
+        with pytest.raises(ValidationError):
+            NewsItem.model_validate(
+                {
+                    "event_id": "1",
+                    "title": "t",
+                    "tag": "m",
+                    "source": "s",
+                    "pubDate": bad_ts,
+                    "link": "https://example.com/a",
+                }
+            )
+        with pytest.raises(ValidationError):
+            QuoteItem.model_validate({"sym": "NVDA", "tsUtc": bad_ts})
+
+    # SyncedTimestampStr: LiveResponse.updatedAt, StateResponse.serverSyncedAt, NewsResponse.updatedAt
+    ok_state_iso = StateResponse.model_validate(
+        {
+            "serverSyncedAt": "2026-11-26T10:30:00Z",
+            "meta": _sample_meta(),
+            "analytics": _sample_analytics(),
+        }
+    )
+    assert ok_state_iso.serverSyncedAt == "2026-11-26T10:30:00Z"
+
+    for bad_synced in (
+        "not-a-timestamp",
+        "2026-02-29 10:00",
+        "2026/02/29 10:00:00 UTC+8",
+        "2026/11/26 99:99:00 UTC+8",
+        "2026/11/26 date(2026,10,26)",
+    ):
+        with pytest.raises(ValidationError):
+            LiveResponse.model_validate(
+                {
+                    "updatedAt": bad_synced,
+                    "updatedAtEt": "11-26 05:30 ET",
+                    "marketSession": "HOLIDAY",
+                    "count": 0,
+                    "quotes": [],
+                }
+            )
+        with pytest.raises(ValidationError):
+            StateResponse.model_validate(
+                {
+                    "serverSyncedAt": bad_synced,
+                    "meta": _sample_meta(),
+                    "analytics": _sample_analytics(),
+                }
+            )
+        with pytest.raises(ValidationError):
+            NewsResponse.model_validate({"updatedAt": bad_synced, "count": 0, "items": []})
+
+    # EtTimestampStr: LiveResponse.updatedAtEt, MetaInfo.updated_at, MetaInfo.updated_at_short
+    for bad_et in (
+        "not-a-timestamp",
+        "2026-02-29 10:00",
+        "02-30 05:30 ET",
+        "13-01 05:30 ET",
+        "11-26 99:99 ET",
+        "11-26 05:30 ET · date(2026,10,26)",
+    ):
+        with pytest.raises(ValidationError):
+            LiveResponse.model_validate(
+                {
+                    "updatedAt": "2026/11/26 18:30:00 UTC+8",
+                    "updatedAtEt": bad_et,
+                    "marketSession": "HOLIDAY",
+                    "count": 0,
+                    "quotes": [],
+                }
+            )
+        with pytest.raises(ValidationError):
+            MetaInfo.model_validate({**_sample_meta(), "updated_at": bad_et})
+        with pytest.raises(ValidationError):
+            MetaInfo.model_validate({**_sample_meta(), "updated_at_short": bad_et})
+
+    with pytest.raises(ValidationError):
+        MainlineItem.model_validate(_sample_mainline(first_seen="date(2026,10,26)"))
+
+
+def test_directional_ruler_bool_rejection_corr_message_and_naive_utc() -> None:
+    with pytest.raises(ValidationError, match="accel and flip must differ"):
+        MainlineItem.model_validate(_sample_mainline(accel=150.0, flip=150.0))
+
+    with pytest.raises(ValidationError):
+        MainlineItem.model_validate(_sample_mainline(spark=[True, False]))
+    with pytest.raises(ValidationError):
+        MainlineItem.model_validate(_sample_mainline(accel=True))
+    with pytest.raises(ValidationError):
+        QuoteItem.model_validate(
+            {"sym": "NVDA", "price": False, "tsUtc": "2026-11-26T10:30:00Z"}
+        )
+
+    valid = _sample_analytics()
+    out_of_range = [list(row) for row in valid["corrMatrix"]]
+    out_of_range[0][1] = 1.0002
+    with pytest.raises(ValidationError, match=r"\[-1\.0001, 1\.0001\]"):
+        AnalyticsData.model_validate({**valid, "corrMatrix": out_of_range})
+
+    # Naive datetime is explicitly interpreted as UTC across config helpers
+    naive_dt = datetime(2026, 11, 25, 11, 0)
+    assert config.get_market_session(naive_dt) == "PRE_MARKET"
+    assert config.format_et_short(naive_dt) == "11-25 06:00 ET"
+    assert config.format_utc_iso(naive_dt) == "2026-11-25T11:00:00Z"
+    for fn in (
+        config._to_utc,
+        config.get_market_session,
+        config.get_research_window,
+        config.format_cn_timestamp,
+        config.format_et_short,
+        config.format_utc_iso,
+    ):
+        doc = (fn.__doc__ or "").lower()
+        assert "naive" in doc and "utc" in doc
 
 
 def test_url_and_quote_boundary_validation() -> None:
