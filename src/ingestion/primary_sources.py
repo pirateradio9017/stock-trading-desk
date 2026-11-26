@@ -391,7 +391,7 @@ def build_holiday_safe_calendar(
                 day=reopen_day.isoformat(),
                 time="22:30 UTC+8",
                 title=f"美股节后恢复开盘（{holiday_name}次日交易）",
-                tag="交易时段恢复",
+                tag="全市场流动性恢复",
                 tone="slate",
                 desc=f"今日（{today_et.isoformat()}）为 {holiday_name} 全日休市；下一合法交易日为 {reopen_day.isoformat()}，注意节后早盘流动性缺口再平衡。",
                 source_url="https://www.nyse.com/markets/hours-calendars",
@@ -408,7 +408,7 @@ def build_holiday_safe_calendar(
             _late_month_pce_window(yr, mo),
             "21:30 UTC+8",
             "美国 PCE 通胀与个人消费支出",
-            "利率 / 消费主线",
+            "影响 M1/M3 · 利率 / 消费主线",
             "ochre",
             "核心PCE决定美联储降息空间与10Y美债方向，直接传导至高估值算力与地产链。",
             "https://www.bea.gov/news/schedule",
@@ -417,7 +417,7 @@ def build_holiday_safe_calendar(
             _first_business_day_of_month(yr, mo),
             "23:00 UTC+8",
             "ISM 制造业 PMI",
-            "宏观景气 / 工业铜",
+            "影响 M3 · 宏观景气 / 工业铜",
             "sage",
             "观察新订单与价格分项是否共振走强，验证顺周期与工业金属需求。",
             "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
@@ -426,7 +426,7 @@ def build_holiday_safe_calendar(
             _first_friday_of_month(yr, mo),
             "21:30 UTC+8",
             "美国非农就业与失业率 (NFP)",
-            "利率 / 降息定价",
+            "影响 M1/M3 · 利率 / 降息定价",
             "terra",
             "就业韧性与薪资增速若超预期将推高10Y美债收益率，考验风险资产估值。",
             "https://www.bls.gov/schedule/news_release/empsit.htm",
@@ -435,7 +435,7 @@ def build_holiday_safe_calendar(
             _mid_month_cpi_window(yr, mo),
             "21:30 UTC+8",
             "美国 CPI 消费者物价指数",
-            "利率 / 黄金 / 长债",
+            "影响 M3 · 利率 / 黄金 / 长债",
             "ochre",
             "观察住房与核心服务通胀粘性，对TLT、黄金及纳指敏感度最高。",
             "https://www.bls.gov/schedule/news_release/cpi.htm",
@@ -445,12 +445,13 @@ def build_holiday_safe_calendar(
     if sec_filings:
         latest_sec = sec_filings[0]
         check_day = _next_valid_trading_day(today_et + timedelta(days=1))
+        sec_m_tag = "M5" if latest_sec.sym in ("COIN", "MSTR") else "M1"
         events.append(
             CalendarEvent(
                 day=check_day.isoformat(),
                 time="21:00 UTC+8",
                 title=f"SEC 披露跟踪：{latest_sec.sym} {latest_sec.form}（{latest_sec.filing_date}）",
-                tag="一手公告核验",
+                tag=f"{sec_m_tag} 一手公告核验",
                 tone="sage",
                 desc=f"最近抓取到 {latest_sec.company} ({latest_sec.sym}) 提交 {latest_sec.form}（Items: {latest_sec.items or '常规披露'}），开盘前后跟踪机构解读与量价承接。",
                 source_url=latest_sec.url,

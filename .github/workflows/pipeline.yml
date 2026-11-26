@@ -1,0 +1,58 @@
+name: Stock Trading Desk Pipeline & Cloud Sync
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_rebalance:
+        description: "Force structural rebalance outside 16:30 ET window"
+        required: false
+        default: "false"
+        type: boolean
+      deploy_worker:
+        description: "Deploy Cloudflare Worker + SPA bundle"
+        required: false
+        default: "true"
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run research pipeline and publish KV (DESK_STATE)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          ARGS="--publish-kv"
+          if [ "${{ inputs.force_rebalance }}" = "true" ]; then
+            ARGS="$ARGS --force-rebalance"
+          fi
+          python -m src.pipeline $ARGS
+
+      - name: Deploy Cloudflare Worker & SPA bundle
+        if: ${{ inputs.deploy_worker != 'false' }}
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          python scripts/deploy_worker.py --no-data

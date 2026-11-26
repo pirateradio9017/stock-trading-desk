@@ -1,0 +1,1927 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>美股交易链条观察 · 全市场主线与联动研判</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --paper: #F4F1EC;
+      --paper-card: #FAF8F4;
+      --paper-soft: #EFEAE2;
+      --ink: #1F1D1A;
+      --ink-muted: #655F56;
+      --ink-faint: #8C857B;
+      --border: #DDD6CB;
+      --border-strong: #C9C0B2;
+      --sage: #2E6F54;
+      --sage-bg: rgba(46, 111, 84, 0.11);
+      --terra: #B83A2E;
+      --terra-bg: rgba(184, 58, 46, 0.11);
+      --ochre: #B67A27;
+      --ochre-bg: rgba(182, 122, 39, 0.12);
+      --slate: #4F6070;
+      --slate-bg: rgba(79, 96, 112, 0.11);
+      --up: #B83A2E;
+      --up-bg: rgba(184, 58, 46, 0.11);
+      --down: #2E6F54;
+      --down-bg: rgba(46, 111, 84, 0.11);
+      --shadow: 0 2px 10px rgba(31, 29, 26, 0.04);
+      --radius: 12px;
+      --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-serif: "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    body.green-up {
+      --up: #2E6F54;
+      --up-bg: rgba(46, 111, 84, 0.11);
+      --down: #B83A2E;
+      --down-bg: rgba(184, 58, 46, 0.11);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #F4F1EC;
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    .max-w-3xl {
+      max-width: 780px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 18px 14px 48px;
+    }
+
+    /* Masthead */
+    .masthead {
+      border-bottom: 2px solid var(--ink);
+      padding-bottom: 14px;
+      margin-bottom: 14px;
+    }
+
+    .masthead-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .kicker {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: 26px;
+      line-height: 1.25;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--ink-muted);
+      font-size: 13px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .sync-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--ink-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--sage);
+      flex-shrink: 0;
+    }
+
+    .sync-dot.busy {
+      background: var(--ochre);
+    }
+
+    .sync-dot.err {
+      background: var(--terra);
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border-strong);
+      background: var(--paper-card);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--paper-soft);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    /* Navigation Tabs */
+    .tab-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+
+    .tab-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--paper-card);
+      color: var(--ink-muted);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    /* Editorial Cards */
+    .ed-card {
+      background: var(--paper-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .ed-soft {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .section-title {
+      margin: 0 0 10px;
+      font-family: var(--font-serif);
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    .tone-sage { background: var(--sage-bg); color: var(--sage); }
+    .tone-terra { background: var(--terra-bg); color: var(--terra); }
+    .tone-ochre { background: var(--ochre-bg); color: var(--ochre); }
+    .tone-slate { background: var(--slate-bg); color: var(--slate); }
+
+    .chg-up { color: var(--up); background: var(--up-bg); }
+    .chg-down { color: var(--down); background: var(--down-bg); }
+    .chg-flat { color: var(--ink-muted); background: var(--paper-soft); }
+
+    /* Hero */
+    .hero-meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .hero-headline {
+      margin: 0 0 8px;
+      font-family: var(--font-serif);
+      font-size: 20px;
+      line-height: 1.35;
+      color: var(--ink);
+    }
+
+    .hero-guide {
+      margin: 0 0 10px;
+      color: var(--ink);
+      font-size: 13.5px;
+    }
+
+    .hero-gate {
+      font-size: 12.5px;
+      color: var(--ink-muted);
+      background: var(--paper-soft);
+      border-left: 3px solid var(--ochre);
+      padding: 8px 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .kpi-card {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      min-width: 0;
+    }
+
+    .kpi-label {
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .kpi-val-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .kpi-val {
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--ink);
+    }
+
+    .kpi-sub {
+      margin-top: 4px;
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .audit-foot {
+      font-size: 11.5px;
+      color: var(--ink-faint);
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+    }
+
+    /* Charts */
+    .chart-box {
+      position: relative;
+      width: 100%;
+      height: 220px;
+    }
+
+    .chart-box-tall {
+      position: relative;
+      width: 100%;
+      height: 250px;
+    }
+
+    .spark-box {
+      position: relative;
+      width: 120px;
+      height: 44px;
+      flex-shrink: 0;
+    }
+
+    /* Mainline Card */
+    .ml-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .ml-title-wrap {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .ml-id-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+    }
+
+    .ml-id {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink-muted);
+      background: var(--paper-soft);
+      padding: 1px 7px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+
+    .ml-title {
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .ml-status {
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      margin-top: 3px;
+    }
+
+    .chain-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 10px 0;
+    }
+
+    .chain-step {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--ink);
+    }
+
+    .chain-arrow {
+      color: var(--ink-faint);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 10px 0;
+    }
+
+    .stock-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--paper);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stock-chip strong {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+    }
+
+    .stock-chip .chip-chg {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 999px;
+    }
+
+    /* Directional Accel / Flip Price Ruler */
+    .ruler-wrap {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 10px 0;
+    }
+
+    .ruler-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      margin-bottom: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ruler-track {
+      position: relative;
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(182, 122, 39, 0.25), rgba(46, 111, 84, 0.28));
+      border: 1px solid var(--border-strong);
+      margin: 6px 0;
+    }
+
+    .ruler-dot {
+      position: absolute;
+      top: 50%;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--ink);
+      border: 2px solid var(--paper-card);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transform: translate(-50%, -50%);
+    }
+
+    .ruler-labels {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--ink);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ml-copy {
+      font-size: 13px;
+      color: var(--ink);
+      margin: 8px 0 0;
+      display: grid;
+      gap: 6px;
+    }
+
+    .ml-copy p {
+      margin: 0;
+    }
+
+    .ml-foot {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+
+    a.src-link {
+      color: var(--slate);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      font-weight: 600;
+      word-break: break-all;
+    }
+
+    /* Candidates Tab */
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .filter-btn {
+      appearance: none;
+      border: 1px solid var(--border-strong);
+      background: var(--paper-card);
+      color: var(--ink-muted);
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .filter-btn.active {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+
+    .cand-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .cand-card {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .cand-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .cand-metrics {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timeline-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .timeline-item {
+      border-left: 3px solid var(--border-strong);
+      padding-left: 10px;
+    }
+
+    .timeline-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      margin-bottom: 2px;
+    }
+
+    /* Correlation Heatmap Table */
+    .table-scroll {
+      overflow-x: auto;
+      width: 100%;
+    }
+
+    table.corr-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    table.corr-table th,
+    table.corr-table td {
+      border: 1px solid var(--border);
+      padding: 7px 6px;
+    }
+
+    table.corr-table th {
+      background: var(--paper-soft);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .linkage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    /* Macro Tab */
+    .macro-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .score-track {
+      width: 100%;
+      height: 8px;
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 6px 0;
+    }
+
+    .score-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.2s ease;
+    }
+
+    .macro-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 6px 0;
+    }
+
+    .macro-metric-box {
+      background: var(--paper-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+
+    .cal-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .cal-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      flex-wrap: wrap;
+    }
+
+    /* News Tab */
+    .news-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .news-item {
+      background: var(--paper-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .news-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 11.5px;
+      color: var(--ink-muted);
+      margin-bottom: 5px;
+    }
+
+    .news-title {
+      margin: 0 0 5px;
+      font-size: 14.5px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .news-summary {
+      margin: 0 0 6px;
+      font-size: 12.5px;
+      color: var(--ink-muted);
+    }
+
+    .empty-box {
+      background: var(--paper-soft);
+      border: 1px dashed var(--border-strong);
+      border-radius: 10px;
+      padding: 18px 14px;
+      text-align: center;
+      color: var(--ink-muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 640px) {
+      .max-w-3xl {
+        padding: 14px 10px 36px;
+      }
+      h1 {
+        font-size: 22px;
+      }
+      .kpi-grid,
+      .cand-grid,
+      .linkage-grid,
+      .macro-metrics {
+        grid-template-columns: 1fr;
+      }
+      .tab-btn {
+        padding: 6px 9px;
+        font-size: 12px;
+      }
+      .spark-box {
+        width: 96px;
+        height: 40px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="max-w-3xl">
+    <header class="masthead">
+      <div class="masthead-top">
+        <div>
+          <div class="kicker">US EQUITY RESEARCH DESK · 实盘投研只研不交易</div>
+          <h1>美股交易链条观察</h1>
+          <p class="subtitle">全市场主线与联动研判 · 因果传导 / 资金轮动 / 跨资产剪刀差</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="sync-pill" id="liveSyncPill">
+          <span class="sync-dot" id="liveSyncDot"></span>
+          <span id="liveTimeText">自动实时同步中...</span>
+        </span>
+        <button type="button" class="btn" id="btnColorMode">红涨绿跌</button>
+        <button type="button" class="btn" id="btnRefreshAll">立即刷新</button>
+      </div>
+    </header>
+
+    <nav class="tab-nav" aria-label="主视图切换">
+      <button type="button" class="tab-btn active" data-tab="chains">主线与传导</button>
+      <button type="button" class="tab-btn" data-tab="candidates">替补与轮动</button>
+      <button type="button" class="tab-btn" data-tab="linkage">跨资产联动</button>
+      <button type="button" class="tab-btn" data-tab="macro">宏观与日程</button>
+      <button type="button" class="tab-btn" data-tab="news">中文快讯</button>
+    </nav>
+
+    <main>
+      <section id="panel-chains" class="tab-panel active">
+        <div id="heroContainer" class="ed-card">
+          <div class="empty-box">正在加载全市场主线研判...</div>
+        </div>
+        <div class="ed-card">
+          <h2 class="section-title">
+            <span>五大主线近 11 期归一化走势</span>
+            <span class="badge tone-slate" id="overviewSessionBadge">实时基准 = 100</span>
+          </h2>
+          <div class="chart-box">
+            <canvas id="ml-overview-chart"></canvas>
+          </div>
+        </div>
+        <div id="mainlinesContainer"></div>
+      </section>
+
+      <section id="panel-candidates" class="tab-panel">
+        <div class="ed-card">
+          <h2 class="section-title">
+            <span>替补观察池筛选与演进</span>
+            <span class="badge tone-slate">C1–C6 晋级/观察/淘汰</span>
+          </h2>
+          <div class="filter-bar" id="candidateFilterBar">
+            <button type="button" class="filter-btn active" data-cfilter="all">全部 (0)</button>
+            <button type="button" class="filter-btn" data-cfilter="upgrade">准备升级 (0)</button>
+            <button type="button" class="filter-btn" data-cfilter="watch">强化跟踪 (0)</button>
+            <button type="button" class="filter-btn" data-cfilter="demote">弱化/淘汰 (0)</button>
+          </div>
+          <div id="candidatesContainer" class="cand-grid"></div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>资金轮动象限（X=20日收益% · Y=5日收益%）</span></h2>
+          <div class="chart-box-tall">
+            <canvas id="candQuadChart"></canvas>
+          </div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>核心资产近 5 日强度对比（%）</span></h2>
+          <div class="chart-box">
+            <canvas id="candBarChart"></canvas>
+          </div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>主线与状态机演进日志</span></h2>
+          <div id="historyLog" class="timeline-list"></div>
+        </div>
+      </section>
+
+      <section id="panel-linkage" class="tab-panel">
+        <div class="ed-card">
+          <h2 class="section-title"><span>跨资产 6×6 日收益相关性矩阵</span></h2>
+          <div class="table-scroll" id="corrMatrixWrap"></div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>四组跨资产因果传导观察</span></h2>
+          <div id="linkageStoriesContainer" class="linkage-grid"></div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>30 日跨资产剪刀差走势（累计收益%）</span></h2>
+          <div class="chart-box-tall">
+            <canvas id="linkageTrendChart"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-macro" class="tab-panel">
+        <div class="ed-card">
+          <h2 class="section-title"><span>五维宏观顺逆风雷达（0–100）</span></h2>
+          <div class="chart-box-tall">
+            <canvas id="macroRadarCanvas"></canvas>
+          </div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>五维宏观代理指标与隐忧</span></h2>
+          <div id="macroCardsContainer" class="macro-grid"></div>
+        </div>
+
+        <div class="ed-card">
+          <h2 class="section-title"><span>近期重要宏观与财报日程</span></h2>
+          <div id="calendarContainer" class="cal-list"></div>
+        </div>
+      </section>
+
+      <section id="panel-news" class="tab-panel">
+        <div class="ed-card">
+          <h2 class="section-title">
+            <span>中文财经快讯（去重聚簇）</span>
+            <button type="button" class="btn" id="btnNewsReload">刷新快讯</button>
+          </h2>
+          <div id="newsMetaBar" style="font-size:12px;color:var(--ink-muted);margin-bottom:10px;"></div>
+          <div id="newsContainer" class="news-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const STORE = {
+        activeTab: "chains",
+        candFilter: "all",
+        greenUp: false,
+        live: null,
+        state: null,
+        news: null,
+        newsError: "",
+        stateError: "",
+        charts: {},
+      };
+
+      const MAINLINE_PALETTE = [
+        "#2E6F54",
+        "#B83A2E",
+        "#B67A27",
+        "#4F6070",
+        "#6D5B7B",
+      ];
+
+      function escapeHtml(val) {
+        if (val === null || val === undefined) return "";
+        return String(val)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function safeHttpUrl(url) {
+        if (typeof url !== "string") return "";
+        const trimmed = url.trim();
+        if (!trimmed) return "";
+        try {
+          const parsed = new URL(trimmed);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            return parsed.href;
+          }
+        } catch (_) {
+          return "";
+        }
+        return "";
+      }
+
+      function finiteOrNull(val) {
+        if (typeof val !== "number" || !Number.isFinite(val)) return null;
+        return val;
+      }
+
+      function getToneClass(tone) {
+        if (tone === "sage" || tone === "terra" || tone === "ochre" || tone === "slate") {
+          return "tone-" + tone;
+        }
+        return "tone-slate";
+      }
+
+      function getUpColor() {
+        return STORE.greenUp ? "#2E6F54" : "#B83A2E";
+      }
+
+      function getDownColor() {
+        return STORE.greenUp ? "#B83A2E" : "#2E6F54";
+      }
+
+      function getUpBgRgb(alpha) {
+        return STORE.greenUp
+          ? "rgba(46, 111, 84, " + alpha + ")"
+          : "rgba(184, 58, 46, " + alpha + ")";
+      }
+
+      function getDownBgRgb(alpha) {
+        return STORE.greenUp
+          ? "rgba(184, 58, 46, " + alpha + ")"
+          : "rgba(46, 111, 84, " + alpha + ")";
+      }
+
+      function fmtChg(chg) {
+        const num = finiteOrNull(chg);
+        if (num === null) return "--";
+        const sign = num > 0 ? "+" : "";
+        return sign + num.toFixed(2) + "%";
+      }
+
+      function fmtPrice(sym, price) {
+        const num = finiteOrNull(price);
+        if (num === null) return "--";
+        if (sym === "^TNX") return num.toFixed(2) + "%";
+        if (sym === "^VIX" || sym === "^MOVE") return num.toFixed(2);
+        if (sym === "BTC-USD") {
+          return "$" + num.toLocaleString("en-US", { maximumFractionDigits: 0 });
+        }
+        if (num >= 1000) {
+          return "$" + num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        return "$" + num.toFixed(2);
+      }
+
+      function fmtLevel(v) {
+        const num = finiteOrNull(v);
+        if (num === null) return "--";
+        if (Math.abs(num - Math.round(num)) < 1e-6) return num.toFixed(0);
+        return num.toFixed(2).replace(/0$/, "");
+      }
+
+      function chgClass(chg) {
+        const num = finiteOrNull(chg);
+        if (num === null) return "chg-flat";
+        if (num > 0) return "chg-up";
+        if (num < 0) return "chg-down";
+        return "chg-flat";
+      }
+
+      function sessionLabelCn(session) {
+        switch (session) {
+          case "PRE_MARKET": return "美股盘前";
+          case "INTRADAY": return "美股盘中";
+          case "AFTER_HOURS": return "美股盘后";
+          case "HOLIDAY": return "美股休市 · 防抖锁定";
+          case "OFF_HOURS": return "休市时段 · 防抖锁定";
+          default: return "已同步";
+        }
+      }
+
+      function quoteMap() {
+        const map = Object.create(null);
+        if (STORE.live && Array.isArray(STORE.live.quotes)) {
+          for (const q of STORE.live.quotes) {
+            if (q && q.sym) map[q.sym] = q;
+          }
+        }
+        return map;
+      }
+
+      function destroyChart(key) {
+        if (STORE.charts[key]) {
+          try {
+            STORE.charts[key].destroy();
+          } catch (_) {}
+          delete STORE.charts[key];
+        }
+      }
+
+      function makeOrReplaceChart(canvasId, config) {
+        if (typeof Chart === "undefined") return null;
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return null;
+        const existing = Chart.getChart ? Chart.getChart(canvas) : STORE.charts[canvasId];
+        if (existing) {
+          try { existing.destroy(); } catch (_) {}
+        }
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        config.options = config.options || {};
+        config.options.animation = false;
+        config.options.responsive = true;
+        config.options.maintainAspectRatio = false;
+        const instance = new Chart(ctx, config);
+        STORE.charts[canvasId] = instance;
+        return instance;
+      }
+
+      function updateSyncPill(busy, errMsg) {
+        const pillText = document.getElementById("liveTimeText");
+        const dot = document.getElementById("liveSyncDot");
+        const badge = document.getElementById("overviewSessionBadge");
+        if (!pillText || !dot) return;
+        dot.classList.remove("busy", "err");
+        if (busy) {
+          dot.classList.add("busy");
+          pillText.textContent = "正在刷新行情与研判...";
+          return;
+        }
+        if (errMsg) {
+          dot.classList.add("err");
+          pillText.textContent = errMsg;
+          return;
+        }
+        const parts = [];
+        if (STORE.live && STORE.live.updatedAt) {
+          parts.push("已同步 " + STORE.live.updatedAt);
+          parts.push(sessionLabelCn(STORE.live.marketSession));
+        } else if (STORE.state && STORE.state.meta && STORE.state.meta.updated_at_short) {
+          parts.push("已同步 " + STORE.state.meta.updated_at_short);
+        } else {
+          parts.push("已同步");
+        }
+        pillText.textContent = parts.join(" · ");
+        if (badge && STORE.live) {
+          badge.textContent = sessionLabelCn(STORE.live.marketSession) + " · 基准=100";
+        }
+      }
+
+      function renderHero() {
+        const el = document.getElementById("heroContainer");
+        if (!el) return;
+        if (!STORE.state) {
+          el.innerHTML = `<div class="empty-box">${escapeHtml(STORE.stateError || "正在加载全市场主线研判...")}</div>`;
+          return;
+        }
+        const meta = STORE.state.meta || {};
+        const qm = quoteMap();
+        const kpis = [
+          { sym: "^VIX", label: "VIX 恐慌指数", note: meta.vix_note || "--" },
+          { sym: "^TNX", label: "10Y 美债收益率", note: meta.tnx_note || "--" },
+          { sym: "BTC-USD", label: "BTC 比特币", note: meta.btc_note || "--" },
+        ];
+
+        const kpiHtml = kpis.map((k) => {
+          const q = qm[k.sym] || null;
+          const valStr = q ? fmtPrice(k.sym, q.price) : "--";
+          const chgStr = q ? fmtChg(q.chg) : "--";
+          const cls = q ? chgClass(q.chg) : "chg-flat";
+          return `
+            <div class="kpi-card" data-kpi="${escapeHtml(k.sym)}">
+              <div class="kpi-label">${escapeHtml(k.label)}</div>
+              <div class="kpi-val-row">
+                <span class="kpi-val">${escapeHtml(valStr)}</span>
+                <span class="badge ${cls}">${escapeHtml(chgStr)}</span>
+              </div>
+              <div class="kpi-sub">${escapeHtml(k.note)}</div>
+            </div>
+          `;
+        }).join("");
+
+        el.innerHTML = `
+          <div class="hero-meta-row">
+            <span class="badge tone-sage">${escapeHtml(meta.badge || "主线研判")}</span>
+            ${meta.regime ? `<span class="badge tone-slate">${escapeHtml(meta.regime)}</span>` : ""}
+            ${meta.stance ? `<span class="badge tone-ochre">${escapeHtml(meta.stance)}</span>` : ""}
+            <span style="font-size:12px;color:var(--ink-muted);">${escapeHtml(meta.updated_at || "")}</span>
+          </div>
+          <h2 class="hero-headline">${escapeHtml(meta.headline || "")}</h2>
+          <p class="hero-guide">${escapeHtml(meta.plain_guide || "")}</p>
+          <div class="hero-gate"><strong>下一验证关口：</strong>${escapeHtml(meta.next_gate || "")}</div>
+          <div class="kpi-grid">${kpiHtml}</div>
+          <div class="audit-foot"><strong>六维自审：</strong>${escapeHtml(meta.self_review || "")}</div>
+        `;
+      }
+
+      function renderOverviewChart() {
+        if (!STORE.state || !Array.isArray(STORE.state.mainlines)) return;
+        const labels = (STORE.state.analytics && Array.isArray(STORE.state.analytics.sparkLabels))
+          ? STORE.state.analytics.sparkLabels
+          : [];
+        const datasets = STORE.state.mainlines.map((m, idx) => ({
+          label: `${m.id} ${m.title}`,
+          data: Array.isArray(m.spark) ? m.spark : [],
+          borderColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
+          backgroundColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.25,
+          fill: false,
+        }));
+        makeOrReplaceChart("ml-overview-chart", {
+          type: "line",
+          data: { labels, datasets },
+          options: {
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { boxWidth: 10, font: { size: 11 } },
+              },
+            },
+            scales: {
+              x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+              y: { grid: { color: "rgba(31,29,26,0.06)" }, ticks: { font: { size: 10 } } },
+            },
+          },
+        });
+      }
+
+      function parseStockPairs(stocksStr) {
+        if (!stocksStr) return [];
+        return stocksStr
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .map((part) => {
+            const idx = part.indexOf(":");
+            if (idx === -1) return { sym: part, name: part };
+            return {
+              sym: part.slice(0, idx).trim(),
+              name: part.slice(idx + 1).trim() || part.slice(0, idx).trim(),
+            };
+          });
+      }
+
+      function buildRulerHtml(m, qm) {
+        const accel = Number(m.accel);
+        const flip = Number(m.flip);
+        const anchor = m.anchor_sym || "";
+        const q = qm[anchor] || null;
+        const cur = q ? finiteOrNull(q.price) : null;
+
+        let leftLabel = "";
+        let rightLabel = "";
+        let leftVal = 0;
+        let rightVal = 0;
+
+        if (accel >= flip) {
+          leftVal = flip;
+          rightVal = accel;
+          leftLabel = `反转位 $${fmtLevel(flip)}`;
+          rightLabel = `加速位 $${fmtLevel(accel)}`;
+        } else {
+          leftVal = accel;
+          rightVal = flip;
+          leftLabel = `加速位 $${fmtLevel(accel)}`;
+          rightLabel = `反转位 $${fmtLevel(flip)}`;
+        }
+
+        let ratio = 0.5;
+        const span = rightVal - leftVal;
+        if (cur !== null && Math.abs(span) > 1e-9) {
+          const raw = (cur - leftVal) / span;
+          ratio = Math.max(0.04, Math.min(0.96, raw));
+        }
+        const pctStr = (ratio * 100).toFixed(2);
+        const curText = cur !== null ? fmtPrice(anchor, cur) : "--";
+
+        return `
+          <div class="ruler-wrap" data-ruler-sym="${escapeHtml(anchor)}">
+            <div class="ruler-head">
+              <span>锚定标的 <strong>${escapeHtml(anchor)}</strong></span>
+              <span>现价 <strong>${escapeHtml(curText)}</strong></span>
+            </div>
+            <div class="ruler-track">
+              <div class="ruler-dot" style="left: ${pctStr}%;"></div>
+            </div>
+            <div class="ruler-labels">
+              <span class="ruler-left">${escapeHtml(leftLabel)}</span>
+              <span class="ruler-right">${escapeHtml(rightLabel)}</span>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderMainlines() {
+        const container = document.getElementById("mainlinesContainer");
+        if (!container) return;
+        if (!STORE.state || !Array.isArray(STORE.state.mainlines)) {
+          container.innerHTML = "";
+          return;
+        }
+        const qm = quoteMap();
+
+        container.innerHTML = STORE.state.mainlines.map((m, idx) => {
+          const steps = String(m.chain || "")
+            .split(/\s*(?:\||->|→)\s*/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const chainHtml = steps
+            .map((st, sIdx) => `${sIdx > 0 ? '<span class="chain-arrow">→</span>' : ""}<span class="chain-step">${escapeHtml(st)}</span>`)
+            .join("");
+
+          const pairs = parseStockPairs(m.stocks);
+          const chipsHtml = pairs.map(({ sym, name }) => {
+            const q = qm[sym] || null;
+            const px = q ? fmtPrice(sym, q.price) : "--";
+            const chg = q ? fmtChg(q.chg) : "--";
+            const cls = q ? chgClass(q.chg) : "chg-flat";
+            return `
+              <span class="stock-chip" data-sym="${escapeHtml(sym)}">
+                <strong>${escapeHtml(sym)}</strong>
+                <span>${escapeHtml(name)}</span>
+                <span>${escapeHtml(px)}</span>
+                <span class="chip-chg ${cls}">${escapeHtml(chg)}</span>
+              </span>
+            `;
+          }).join("");
+
+          const srcUrl = safeHttpUrl(m.source_url);
+          const toneCls = getToneClass(m.action_tone);
+
+          return `
+            <article class="ed-card" data-mainline-id="${escapeHtml(m.id)}">
+              <div class="ml-head">
+                <div class="ml-title-wrap">
+                  <div class="ml-id-row">
+                    <span class="ml-id">${escapeHtml(m.id)}</span>
+                    <span class="badge ${toneCls}">${escapeHtml(m.action)}</span>
+                    <span class="badge tone-slate">Score ${escapeHtml(m.score)}</span>
+                    <span style="font-size:11.5px;color:var(--ink-muted);">首次发现 ${escapeHtml(m.first_seen)}</span>
+                  </div>
+                  <h3 class="ml-title">${escapeHtml(m.title)}</h3>
+                  <div class="ml-status">${escapeHtml(m.status)}</div>
+                </div>
+                <div class="spark-box">
+                  <canvas id="ml-spark-${idx}"></canvas>
+                </div>
+              </div>
+
+              <div class="chain-row">${chainHtml}</div>
+              <div class="chips-row">${chipsHtml}</div>
+              ${buildRulerHtml(m, qm)}
+
+              <div class="ml-copy">
+                <p><strong>白话翻译：</strong>${escapeHtml(m.plain)}</p>
+                <p><strong>核心逻辑：</strong>${escapeHtml(m.summary)}</p>
+                <p><strong>盯盘要点：</strong>${escapeHtml(m.watch_points)}</p>
+              </div>
+
+              <div class="ml-foot">
+                <span style="color:var(--ink-muted);">锚定标的：${escapeHtml(m.anchor_sym)}</span>
+                ${srcUrl ? `<a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">验证信源 ↗</a>` : ""}
+              </div>
+            </article>
+          `;
+        }).join("");
+
+        STORE.state.mainlines.forEach((m, idx) => {
+          const spark = Array.isArray(m.spark) ? m.spark : [];
+          const first = spark.length ? Number(spark[0]) : 100;
+          const last = spark.length ? Number(spark[spark.length - 1]) : 100;
+          const color = last >= first ? getUpColor() : getDownColor();
+          makeOrReplaceChart(`ml-spark-${idx}`, {
+            type: "line",
+            data: {
+              labels: spark.map((_, i) => String(i)),
+              datasets: [{
+                label: m.id,
+                data: spark,
+                borderColor: color,
+                backgroundColor: color,
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.25,
+                fill: false,
+              }],
+            },
+            options: {
+              plugins: { legend: { display: false }, tooltip: { enabled: false } },
+              scales: { x: { display: false }, y: { display: false } },
+            },
+          });
+        });
+      }
+
+      function renderCandidates() {
+        const container = document.getElementById("candidatesContainer");
+        const filterBar = document.getElementById("candidateFilterBar");
+        const histEl = document.getElementById("historyLog");
+        if (!container || !filterBar || !histEl) return;
+
+        if (!STORE.state) {
+          container.innerHTML = `<div class="empty-box">暂无候补主线数据</div>`;
+          histEl.innerHTML = "";
+          return;
+        }
+
+        const cands = Array.isArray(STORE.state.candidates) ? STORE.state.candidates : [];
+        const counts = {
+          all: cands.length,
+          upgrade: cands.filter((c) => c.tier === "upgrade").length,
+          watch: cands.filter((c) => c.tier === "watch").length,
+          demote: cands.filter((c) => c.tier === "demote").length,
+        };
+
+        const labels = {
+          all: `全部 (${counts.all})`,
+          upgrade: `准备升级 (${counts.upgrade})`,
+          watch: `强化跟踪 (${counts.watch})`,
+          demote: `弱化/淘汰 (${counts.demote})`,
+        };
+
+        filterBar.querySelectorAll("[data-cfilter]").forEach((btn) => {
+          const key = btn.getAttribute("data-cfilter");
+          btn.textContent = labels[key] || "";
+          btn.classList.toggle("active", key === STORE.candFilter);
+        });
+
+        const filtered = STORE.candFilter === "all"
+          ? cands
+          : cands.filter((c) => c.tier === STORE.candFilter);
+
+        if (filtered.length === 0) {
+          container.innerHTML = `<div class="empty-box" data-empty-candidates="1" style="grid-column:1/-1;">当前筛选类别下暂无候补方向</div>`;
+        } else {
+          container.innerHTML = filtered.map((c) => `
+            <article class="cand-card" data-candidate-id="${escapeHtml(c.id)}">
+              <div class="cand-top">
+                <div>
+                  <span class="ml-id">${escapeHtml(c.id)}</span>
+                  <strong style="font-size:14.5px;margin-left:4px;">${escapeHtml(c.name)}</strong>
+                </div>
+                <span class="badge ${getToneClass(c.tone)}">${escapeHtml(c.tier_label)}</span>
+              </div>
+              <div class="cand-metrics">
+                <span>关联主线：<strong>${escapeHtml(c.linked_to)}</strong></span>
+                <span class="badge ${chgClass(c.r5)}">5D ${escapeHtml(fmtChg(c.r5))}</span>
+                <span class="badge ${chgClass(c.r20)}">20D ${escapeHtml(fmtChg(c.r20))}</span>
+              </div>
+              <div style="font-size:12px;color:var(--ink-muted);">
+                代表标的：${escapeHtml(c.stocks || "--")}
+              </div>
+              <div style="font-size:12.5px;color:var(--ink);">${escapeHtml(c.plain)}</div>
+              <div style="font-size:12px;color:var(--ink-muted);"><strong>晋级规则：</strong>${escapeHtml(c.rule)}</div>
+              <div style="font-size:11.5px;color:var(--ink-faint);">
+                首次发现 ${escapeHtml(c.first_seen)} · 滞留 ${escapeHtml(c.stale_days)} 天 · ${escapeHtml(c.history_log || "")}
+              </div>
+            </article>
+          `).join("");
+        }
+
+        const hist = Array.isArray(STORE.state.history) ? STORE.state.history : [];
+        histEl.innerHTML = hist.length
+          ? hist.map((h) => `
+            <div class="timeline-item">
+              <div class="timeline-meta">
+                <span class="badge ${getToneClass(h.tone)}">${escapeHtml(h.type)}</span>
+                <span>${escapeHtml(h.time)}</span>
+              </div>
+              <div style="font-weight:700;font-size:13.5px;margin-bottom:2px;">${escapeHtml(h.title)}</div>
+              <div style="font-size:12.5px;color:var(--ink);">${escapeHtml(h.detail)}</div>
+              ${h.lesson ? `<div style="font-size:12px;color:var(--ink-muted);margin-top:2px;">复盘经验：${escapeHtml(h.lesson)}</div>` : ""}
+            </div>
+          `).join("")
+          : `<div class="empty-box">暂无演进日志</div>`;
+      }
+
+      function renderCandidateCharts() {
+        if (!STORE.state || !STORE.state.analytics) return;
+        const assets = Array.isArray(STORE.state.analytics.rotationAssets)
+          ? STORE.state.analytics.rotationAssets
+          : [];
+        if (!assets.length) return;
+
+        const upColor = getUpColor();
+        const downColor = getDownColor();
+        const pointColors = assets.map((a) => (Number(a.r5) >= 0 ? upColor : downColor));
+
+        makeOrReplaceChart("candQuadChart", {
+          type: "scatter",
+          data: {
+            datasets: [{
+              label: "轮动资产 (X=20D%, Y=5D%)",
+              data: assets.map((a) => ({ x: Number(a.r20) || 0, y: Number(a.r5) || 0, sym: a.sym, name: a.name })),
+              backgroundColor: pointColors,
+              borderColor: pointColors,
+              pointRadius: 6,
+              pointHoverRadius: 8,
+            }],
+          },
+          options: {
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const raw = ctx.raw || {};
+                    return `${raw.sym || ""} (${raw.name || ""}): 20D ${raw.x}%, 5D ${raw.y}%`;
+                  },
+                },
+              },
+            },
+            scales: {
+              x: { title: { display: true, text: "20日收益 (%)" }, grid: { color: "rgba(31,29,26,0.06)" } },
+              y: { title: { display: true, text: "5日收益 (%)" }, grid: { color: "rgba(31,29,26,0.06)" } },
+            },
+          },
+        });
+
+        makeOrReplaceChart("candBarChart", {
+          type: "bar",
+          data: {
+            labels: assets.map((a) => a.sym),
+            datasets: [{
+              label: "5日涨跌幅 (%)",
+              data: assets.map((a) => Number(a.r5) || 0),
+              backgroundColor: pointColors,
+              borderRadius: 4,
+            }],
+          },
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+              y: { grid: { color: "rgba(31,29,26,0.06)" }, ticks: { font: { size: 11 } } },
+            },
+          },
+        });
+      }
+
+      function renderLinkage() {
+        const matrixWrap = document.getElementById("corrMatrixWrap");
+        const storiesEl = document.getElementById("linkageStoriesContainer");
+        if (!matrixWrap || !storiesEl) return;
+
+        if (!STORE.state) {
+          matrixWrap.innerHTML = `<div class="empty-box">暂无相关性矩阵数据</div>`;
+          storiesEl.innerHTML = "";
+          return;
+        }
+
+        const an = STORE.state.analytics || {};
+        const labels = Array.isArray(an.corrLabels) ? an.corrLabels : [];
+        const mat = Array.isArray(an.corrMatrix) ? an.corrMatrix : [];
+
+        if (labels.length && mat.length) {
+          const headCells = `<th>资产</th>` + labels.map((l) => `<th>${escapeHtml(l)}</th>`).join("");
+          const bodyRows = labels.map((rowLabel, i) => {
+            const row = Array.isArray(mat[i]) ? mat[i] : [];
+            const tds = labels.map((_, j) => {
+              if (i === j) {
+                return `<td style="background:var(--paper-soft);color:var(--ink-faint);">—</td>`;
+              }
+              const val = finiteOrNull(row[j]);
+              if (val === null) return `<td>--</td>`;
+              const absVal = Math.min(1, Math.abs(val));
+              let styleAttr = "";
+              if (absVal > 0.05) {
+                const alpha = (0.08 + absVal * 0.24).toFixed(2);
+                const bg = val > 0 ? getUpBgRgb(alpha) : getDownBgRgb(alpha);
+                const fg = val > 0 ? getUpColor() : getDownColor();
+                styleAttr = ` style="background-color:${bg};color:${fg};font-weight:700;"`;
+              }
+              return `<td${styleAttr}>${val.toFixed(2)}</td>`;
+            }).join("");
+            return `<tr><th>${escapeHtml(rowLabel)}</th>${tds}</tr>`;
+          }).join("");
+
+          matrixWrap.innerHTML = `
+            <table class="corr-table">
+              <thead><tr>${headCells}</tr></thead>
+              <tbody>${bodyRows}</tbody>
+            </table>
+          `;
+        } else {
+          matrixWrap.innerHTML = `<div class="empty-box">暂无相关性矩阵数据</div>`;
+        }
+
+        const stories = Array.isArray(STORE.state.linkage) ? STORE.state.linkage : [];
+        storiesEl.innerHTML = stories.map((item) => `
+          <article class="ed-soft">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+              <strong style="font-size:14px;">${escapeHtml(item.pair)}</strong>
+              <span class="badge ${getToneClass(item.tone)}">${escapeHtml(item.corr)}</span>
+            </div>
+            <p style="margin:0 0 6px;font-size:12.5px;color:var(--ink);">${escapeHtml(item.why)}</p>
+            <p style="margin:0;font-size:12px;color:var(--ink-muted);"><strong>信号触发：</strong>${escapeHtml(item.signal)}</p>
+          </article>
+        `).join("");
+      }
+
+      function renderLinkageChart() {
+        if (!STORE.state || !STORE.state.analytics || !STORE.state.analytics.linkageTrend) return;
+        const lt = STORE.state.analytics.linkageTrend;
+        const labels = Array.isArray(lt.labels) ? lt.labels : [];
+        const series = Array.isArray(lt.series) ? lt.series : [];
+        const datasets = series.map((s, idx) => ({
+          label: s.label || s.sym,
+          data: Array.isArray(s.values) ? s.values : [],
+          borderColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
+          backgroundColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
+          borderWidth: 2,
+          pointRadius: 1.5,
+          tension: 0.2,
+          fill: false,
+        }));
+        makeOrReplaceChart("linkageTrendChart", {
+          type: "line",
+          data: { labels, datasets },
+          options: {
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { boxWidth: 10, font: { size: 11 } },
+              },
+            },
+            scales: {
+              x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+              y: { grid: { color: "rgba(31,29,26,0.06)" }, ticks: { font: { size: 10 } } },
+            },
+          },
+        });
+      }
+
+      function macroScoreColor(score) {
+        if (score >= 60) return "#2E6F54";
+        if (score >= 35) return "#B67A27";
+        return "#B83A2E";
+      }
+
+      function macroScoreTone(score) {
+        if (score >= 60) return "tone-sage";
+        if (score >= 35) return "tone-ochre";
+        return "tone-terra";
+      }
+
+      function renderMacro() {
+        const cardsEl = document.getElementById("macroCardsContainer");
+        const calEl = document.getElementById("calendarContainer");
+        if (!cardsEl || !calEl) return;
+
+        if (!STORE.state) {
+          cardsEl.innerHTML = `<div class="empty-box">暂无宏观数据</div>`;
+          calEl.innerHTML = "";
+          return;
+        }
+
+        const macro = Array.isArray(STORE.state.macro) ? STORE.state.macro : [];
+        cardsEl.innerHTML = macro.map((m) => {
+          const clamped = Math.max(0, Math.min(100, Number(m.score) || 0));
+          const fillBg = macroScoreColor(clamped);
+          const srcUrl = safeHttpUrl(m.source_url);
+          return `
+            <article class="ed-soft" data-macro-id="${escapeHtml(m.chain_id)}">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                <strong style="font-size:14.5px;">${escapeHtml(m.title)}</strong>
+                <div style="display:flex;gap:6px;align-items:center;">
+                  <span class="badge ${macroScoreTone(clamped)}">${escapeHtml(m.wind || m.state)} · ${escapeHtml(m.score)}/100</span>
+                  <span class="badge tone-slate">${escapeHtml(m.state)}</span>
+                </div>
+              </div>
+              <div class="score-track">
+                <div class="score-fill" style="width: ${clamped}%; background-color: ${fillBg};"></div>
+              </div>
+              ${m.feature ? `<div style="font-size:12px;color:var(--ink-muted);margin-bottom:4px;"><strong>当下特征：</strong>${escapeHtml(m.feature)}</div>` : ""}
+              <div class="macro-metrics">
+                <div class="macro-metric-box">
+                  <div style="color:var(--ink-muted);font-size:11px;">${escapeHtml(m.m1_label || "代理指标 1")}</div>
+                  <div style="font-weight:700;font-size:14px;">${escapeHtml(m.m1_val || "--")}</div>
+                  <div style="color:var(--ink-faint);font-size:11px;">${escapeHtml(m.m1_date || "")} ${escapeHtml(m.m1_sub || "")}</div>
+                </div>
+                <div class="macro-metric-box">
+                  <div style="color:var(--ink-muted);font-size:11px;">${escapeHtml(m.m2_label || "代理指标 2")}</div>
+                  <div style="font-weight:700;font-size:14px;">${escapeHtml(m.m2_val || "--")}</div>
+                  <div style="color:var(--ink-faint);font-size:11px;">${escapeHtml(m.m2_date || "")} ${escapeHtml(m.m2_sub || "")}</div>
+                </div>
+              </div>
+              <div style="font-size:12.5px;color:var(--ink);margin-top:4px;"><strong>白话解读：</strong>${escapeHtml(m.plain)}</div>
+              <div style="font-size:12.5px;color:var(--terra);margin-top:3px;"><strong>核心隐忧：</strong>${escapeHtml(m.concern)}</div>
+              ${srcUrl ? `<div style="margin-top:6px;font-size:12px;"><a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">一级验证来源 ↗</a></div>` : ""}
+            </article>
+          `;
+        }).join("");
+
+        const cal = Array.isArray(STORE.state.calendar) ? STORE.state.calendar : [];
+        calEl.innerHTML = cal.length
+          ? cal.map((ev) => {
+            const srcUrl = safeHttpUrl(ev.source_url);
+            return `
+              <div class="cal-item">
+                <div style="min-width:0;flex:1;">
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px;">
+                    <span class="badge tone-slate">${escapeHtml(ev.day)}</span>
+                    <span style="font-size:11.5px;color:var(--ink-muted);">${escapeHtml(ev.time)}</span>
+                    <span class="badge ${getToneClass(ev.tone)}">${escapeHtml(ev.tag)}</span>
+                  </div>
+                  <div style="font-weight:700;font-size:14px;">${escapeHtml(ev.title)}</div>
+                  <div style="font-size:12.5px;color:var(--ink-muted);margin-top:2px;">${escapeHtml(ev.desc)}</div>
+                </div>
+                ${srcUrl ? `<a class="src-link" style="font-size:12px;" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">日程来源 ↗</a>` : ""}
+              </div>
+            `;
+          }).join("")
+          : `<div class="empty-box">近期暂无关键日程</div>`;
+      }
+
+      function renderMacroRadar() {
+        if (!STORE.state || !Array.isArray(STORE.state.macro) || !STORE.state.macro.length) return;
+        const macro = STORE.state.macro;
+        makeOrReplaceChart("macroRadarCanvas", {
+          type: "radar",
+          data: {
+            labels: macro.map((m) => m.title),
+            datasets: [{
+              label: "宏观健康度评分",
+              data: macro.map((m) => Math.max(0, Math.min(100, Number(m.score) || 0))),
+              borderColor: "#2E6F54",
+              backgroundColor: "rgba(46, 111, 84, 0.18)",
+              pointBackgroundColor: "#2E6F54",
+              borderWidth: 2,
+            }],
+          },
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              r: {
+                min: 0,
+                max: 100,
+                ticks: { stepSize: 25, backdropColor: "transparent", font: { size: 10 } },
+                pointLabels: { font: { size: 11 } },
+              },
+            },
+          },
+        });
+      }
+
+      function renderNews() {
+        const metaBar = document.getElementById("newsMetaBar");
+        const listEl = document.getElementById("newsContainer");
+        if (!metaBar || !listEl) return;
+
+        if (STORE.newsError) {
+          metaBar.textContent = "快讯接口暂未就绪";
+          listEl.innerHTML = `<div class="empty-box">${escapeHtml(STORE.newsError)}</div>`;
+          return;
+        }
+        if (!STORE.news) {
+          metaBar.textContent = "正在拉取中文财经快讯...";
+          listEl.innerHTML = `<div class="empty-box">正在同步多源中文电报...</div>`;
+          return;
+        }
+        const items = Array.isArray(STORE.news.items) ? STORE.news.items : [];
+        metaBar.textContent = `更新时间：${STORE.news.updatedAt || "--"} · 共 ${items.length} 条去重快讯`;
+        if (items.length === 0) {
+          listEl.innerHTML = `<div class="empty-box">当前暂未获取到有效中文快讯，请稍后点击刷新重试。</div>`;
+          return;
+        }
+        listEl.innerHTML = items.map((item) => {
+          const link = safeHttpUrl(item.link);
+          return `
+            <article class="news-item">
+              <div class="news-meta">
+                <span class="badge tone-sage">${escapeHtml(item.tag)}</span>
+                <span class="badge tone-slate">${escapeHtml(item.source)}</span>
+                <span>${escapeHtml(item.pubDate)}</span>
+              </div>
+              <h3 class="news-title">${escapeHtml(item.title)}</h3>
+              <p class="news-summary">${escapeHtml(item.summary)}</p>
+              ${link ? `<a class="src-link" style="font-size:12px;" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a>` : ""}
+            </article>
+          `;
+        }).join("");
+      }
+
+      function renderChartsForTab(tabName) {
+        if (tabName === "chains") {
+          renderOverviewChart();
+          // Sparklines are already drawn by renderMainlines when data changes, ensure resize
+          Object.keys(STORE.charts).forEach((k) => {
+            if (k === "ml-overview-chart" || k.startsWith("ml-spark-")) {
+              try { STORE.charts[k].resize(); } catch (_) {}
+            }
+          });
+        } else if (tabName === "candidates") {
+          renderCandidateCharts();
+        } else if (tabName === "linkage") {
+          renderLinkageChart();
+        } else if (tabName === "macro") {
+          renderMacroRadar();
+        }
+      }
+
+      function renderAll() {
+        renderHero();
+        renderMainlines();
+        renderCandidates();
+        renderLinkage();
+        renderMacro();
+        renderNews();
+        renderChartsForTab(STORE.activeTab);
+      }
+
+      function switchTab(tabName) {
+        STORE.activeTab = tabName;
+        document.querySelectorAll(".tab-btn").forEach((btn) => {
+          btn.classList.toggle("active", btn.getAttribute("data-tab") === tabName);
+        });
+        document.querySelectorAll(".tab-panel").forEach((panel) => {
+          panel.classList.toggle("active", panel.id === "panel-" + tabName);
+        });
+        renderChartsForTab(tabName);
+      }
+
+      function togglePolarity() {
+        STORE.greenUp = !STORE.greenUp;
+        document.body.classList.toggle("green-up", STORE.greenUp);
+        const btn = document.getElementById("btnColorMode");
+        if (btn) {
+          btn.textContent = STORE.greenUp ? "绿涨红跌" : "红涨绿跌";
+        }
+        renderHero();
+        renderMainlines();
+        renderCandidates();
+        renderLinkage();
+        renderChartsForTab(STORE.activeTab);
+      }
+
+      async function fetchJsonSafe(url) {
+        const resp = await fetch(url, { cache: "no-store" });
+        if (!resp.ok) {
+          const err = new Error(`HTTP ${resp.status}`);
+          err.status = resp.status;
+          throw err;
+        }
+        return await resp.json();
+      }
+
+      async function fetchNewsOnly(force) {
+        const btn = document.getElementById("btnNewsReload");
+        if (btn) btn.disabled = true;
+        try {
+          const qs = force ? `?force=1&t=${Date.now()}` : `?t=${Date.now()}`;
+          const data = await fetchJsonSafe("/api/news" + qs);
+          STORE.news = data;
+          STORE.newsError = "";
+        } catch (err) {
+          STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
+        } finally {
+          if (btn) btn.disabled = false;
+          renderNews();
+        }
+      }
+
+      async function fetchAll(force) {
+        const btn = document.getElementById("btnRefreshAll");
+        if (btn) btn.disabled = true;
+        updateSyncPill(true, "");
+
+        const qs = force ? `?force=1&t=${Date.now()}` : `?t=${Date.now()}`;
+        let liveDone = false;
+        let stateDone = false;
+        let liveOk = false;
+        let stateOk = false;
+
+        const maybeRenderLiveState = () => {
+          if (!liveDone || !stateDone) return;
+          renderHero();
+          renderMainlines();
+          renderCandidates();
+          renderLinkage();
+          renderMacro();
+          renderChartsForTab(STORE.activeTab);
+          if (!stateOk && !liveOk) {
+            updateSyncPill(false, "同步异常 · 请稍后重试");
+          } else {
+            updateSyncPill(false, "");
+          }
+        };
+
+        const liveP = fetchJsonSafe("/api/live" + qs).then(
+          (val) => {
+            STORE.live = val;
+            liveOk = true;
+            liveDone = true;
+            maybeRenderLiveState();
+          },
+          () => {
+            liveDone = true;
+            maybeRenderLiveState();
+          }
+        );
+
+        const stateP = fetchJsonSafe("/api/state" + qs).then(
+          (val) => {
+            STORE.state = val;
+            STORE.stateError = "";
+            stateOk = true;
+            stateDone = true;
+            maybeRenderLiveState();
+          },
+          (err) => {
+            STORE.stateError = `主线研判状态暂不可用 (${err && err.status ? err.status : "初始化中"})`;
+            stateDone = true;
+            maybeRenderLiveState();
+          }
+        );
+
+        const newsP = fetchJsonSafe("/api/news" + qs).then(
+          (val) => {
+            STORE.news = val;
+            STORE.newsError = "";
+            renderNews();
+          },
+          (err) => {
+            STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
+            renderNews();
+          }
+        );
+
+        await Promise.allSettled([liveP, stateP, newsP]);
+        if (btn) btn.disabled = false;
+      }
+
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tab = btn.getAttribute("data-tab");
+          if (tab) switchTab(tab);
+        });
+      });
+
+      document.querySelectorAll("[data-cfilter]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const f = btn.getAttribute("data-cfilter") || "all";
+          STORE.candFilter = f;
+          renderCandidates();
+        });
+      });
+
+      const colorBtn = document.getElementById("btnColorMode");
+      if (colorBtn) colorBtn.addEventListener("click", togglePolarity);
+
+      const refreshBtn = document.getElementById("btnRefreshAll");
+      if (refreshBtn) refreshBtn.addEventListener("click", () => fetchAll(true));
+
+      const newsReloadBtn = document.getElementById("btnNewsReload");
+      if (newsReloadBtn) newsReloadBtn.addEventListener("click", () => fetchNewsOnly(true));
+
+      fetchAll(false);
+      setInterval(() => {
+        fetchAll(false);
+      }, 180000);
+    })();
+  </script>
+</body>
+</html>
