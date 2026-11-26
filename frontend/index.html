@@ -1826,7 +1826,10 @@
       async function fetchAll(force) {
         const btn = document.getElementById("btnRefreshAll");
         if (btn) btn.disabled = true;
-        updateSyncPill(true, "");
+        const isInitialLoad = !force && !STORE.state && !STORE.live;
+        if (!isInitialLoad) {
+          updateSyncPill(true, "");
+        }
 
         const qs = force ? `?force=1&t=${Date.now()}` : `?t=${Date.now()}`;
         let liveDone = false;
@@ -1842,10 +1845,12 @@
           renderLinkage();
           renderMacro();
           renderChartsForTab(STORE.activeTab);
-          if (!stateOk && !liveOk) {
-            updateSyncPill(false, "同步异常 · 请稍后重试");
-          } else {
-            updateSyncPill(false, "");
+          if (!isInitialLoad) {
+            if (!stateOk && !liveOk) {
+              updateSyncPill(false, "同步异常 · 请稍后重试");
+            } else {
+              updateSyncPill(false, "");
+            }
           }
         };
 
@@ -1890,6 +1895,13 @@
         );
 
         await Promise.allSettled([liveP, stateP, newsP]);
+        if (isInitialLoad) {
+          if (!stateOk && !liveOk) {
+            updateSyncPill(false, "同步异常 · 请稍后重试");
+          } else {
+            updateSyncPill(false, "");
+          }
+        }
         if (btn) btn.disabled = false;
       }
 
