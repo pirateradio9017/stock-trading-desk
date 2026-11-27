@@ -593,3 +593,11 @@ def test_cross_timezone_quote_freshness_and_noise_filter():
     assert selected_links == {'https://wallstreetcn.com/g1', 'https://wallstreetcn.com/g2'}
     assert _classify_tag('SK海力士大涨带动芯片股走强') == 'M1 算力'
     assert _classify_tag('中国商务部顺延镓锗锑出口禁令暂停期') == '并购监管'
+    from pydantic import ValidationError
+    from src.research.analyst import _DraftMeta
+    with pytest.raises(ValidationError):
+        _DraftMeta(
+            market_brief='',
+            badge='b', headline='h', plain_guide='p', next_gate='n',
+            regime='r', stance='s', vix_note='v', tnx_note='t', btc_note='btc',
+        )

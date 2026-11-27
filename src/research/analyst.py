@@ -69,7 +69,7 @@ _TIER_META: dict[CandidateTier, tuple[str, Tone]] = {
 
 
 class _DraftMeta(BaseModel):
-    market_brief: str = Field(default="", max_length=6000, description="跨市场增量快报：按事件分段，写事实与时间、相对上期变化、主线/候补映射、传导假设、待验证点；只使用提供的证据。")
+    market_brief: str = Field(..., min_length=80, max_length=6000, description="必填跨市场增量快报（600-1200字）：按事件分段，写事实与时间、相对上期变化、主线/候补映射、传导假设、待验证点；只使用提供的证据，严禁留空。")
     badge: str = Field(description="简短市场定调标签，如'高波去杠杆 · 防御与长债避险占优'")
     headline: str = Field(description="一句话核心交易结论，必须引用真实数据")
     plain_guide: str = Field(description="2-3句大白话行动指引（只研不交易，聚焦观察与风控）")
@@ -558,7 +558,15 @@ def build_deterministic_draft(
         f"策略上坚持{stance}，重点观察各主线加速确认位与证伪防守位得失。"
     )
 
+    det_brief = (
+        f"【跨市场定量摘要】截至 {format_cn_timestamp(bundle.fetched_at_utc)}（{decision.market_session}），"
+        f"标普500 20D {_fmt_pct(spx_r20_opt)}、纳指 20D {_fmt_pct(ixic_r20_opt)}，"
+        f"VIX {_fmt_num(vix_p)}、10Y 美债 {_fmt_num(tnx_p, 2, '%')}、TLT 5D {_fmt_pct(q_tlt.r5 if q_tlt else None)}。"
+        f"当前由定量降级引擎维持骨架，下一验证节点：{next_gate}。"
+    )
+
     meta = _DraftMeta(
+        market_brief=det_brief,
         badge=badge,
         headline=headline,
         plain_guide=plain_guide,
@@ -853,7 +861,7 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
         }, json={
             "model": model_name,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT + "\n在保证证据、传导与反证完整的前提下避免重复，所有中文叙述合计控制在6000字以内，优先完整输出全部必填字段。\nReturn only a JSON object matching this JSON Schema:\n" + schema},
+                {"role": "system", "content": _SYSTEM_PROMPT + "\n在保证证据、传导与反证完整的前提下避免重复，所有中文叙述合计控制在6000字以内，优先完整输出全部必填字段（包括 meta.market_brief 跨市场增量快报，严禁省略或留空）。\nReturn only a JSON object matching this JSON Schema:\n" + schema},
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
