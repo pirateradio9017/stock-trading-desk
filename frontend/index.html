@@ -401,7 +401,11 @@
     }
     .chart-legend button[aria-pressed="false"] { opacity: .65; text-decoration: line-through; }
     .rotation-bars { display: grid; gap: 5px; }
-    .rotation-bar { display: grid; grid-template-columns: 4.25rem minmax(0,1fr) 4.5rem; gap: 8px; align-items: center; font: .8rem var(--font-mono); }
+    .rotation-group { display: grid; grid-template-columns: 2.4rem minmax(0,1fr); gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding: 4px 0; }
+    .rotation-bar { display: grid; grid-template-columns: minmax(0,1fr) 4.5rem; gap: 8px; align-items: center; font: .8rem var(--font-mono); }
+    .rotation-fill.period-20 { opacity: .45; }
+    .rotation-period { display: inline-block; width: 12px; height: 8px; margin-right: 5px; background: var(--ink-muted); border-radius: 2px; }
+    .rotation-period.period-20 { opacity: .45; }
     .rotation-bar strong { text-align: right; }
     .rotation-track { display: block; position: relative; height: 12px; background: var(--paper-card); border-radius: 4px; }
     .rotation-track::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid var(--border-strong); }
@@ -1015,19 +1019,20 @@
           </div>
           <div class="candidate-charts">
             <section class="ed-soft">
-              <h3>20 日 × 5 日收益率</h3>
+              <h3>候补主题动量四象限</h3>
               <div class="scatter-controls">
-                <label for="rotationSymbol">查看标的</label>
+                <label for="rotationSymbol">查看主题</label>
                 <select id="rotationSymbol"></select>
               </div>
               <p class="section-note">横轴看 20 日，纵轴看 5 日。零线区分涨跌。</p>
               <div class="chart-box chart-plot">
-                <canvas id="candQuadChart" role="img" aria-label="候补资产 20 日与 5 日收益散点图"></canvas>
+                <canvas id="candQuadChart" role="img" aria-label="候补主题 20 日与 5 日收益散点图"></canvas>
               </div>
             </section>
             <section class="ed-soft">
-              <h3>5 日收益率对比</h3>
-              <div id="candBarChart" class="rotation-bars" role="list" aria-label="按 5 日收益排序"></div>
+              <h3>5 日与 20 日收益对比</h3>
+              <div class="chart-legend"><span><i class="rotation-period"></i>5 日</span><span><i class="rotation-period period-20"></i>20 日</span></div>
+              <div id="candBarChart" class="rotation-bars" role="list" aria-label="候补主题 5 日与 20 日收益"></div>
             </section>
           </div>
           <div id="candidatesContainer" class="cand-grid"></div>
@@ -1424,6 +1429,8 @@
         if (!frame) return;
         const {ctx, canvas} = frame;
         if (!points.length) {
+          canvas.onpointermove = canvas.onpointerdown = canvas.onclick = null;
+          canvas.removeAttribute("title");
           chartEmpty(frame);
           return;
         }
@@ -1443,8 +1450,8 @@
           const x = axes.x(point.x), y = axes.y(point.y);
           ctx.fillStyle = point.color;
           chartDot(ctx, x, y, selection ? 4 : 5);
-          if (selection && point.label !== selection.value) continue;
-          if (selection) {
+
+          if (selection && point.label === selection.value) {
             ctx.strokeStyle = "#152c2c";
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -1453,7 +1460,7 @@
           }
           const textWidth = ctx.measureText(point.label).width;
           const labelX = Math.max(axes.left, Math.min(axes.right - textWidth, x + 8));
-          const candidates = [-6, 12, -19, 25, -32];
+          const candidates = [-7, 15, -21, 29, -35];
           const labelY = candidates.map(offset => y + offset).find(row => row >= axes.top && row <= axes.bottom &&
             !placed.some(label => Math.abs(label.y - row) < 13 && labelX < label.x + label.w + 4 && labelX + textWidth > label.x - 4));
           if (labelY !== undefined) {
@@ -1464,7 +1471,7 @@
           }
         }
         const readPoint = point => {
-          if (reading && point) reading.textContent = `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}`;
+          if (reading && point) reading.textContent = `${point.name ? point.label + " " + point.name : point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}`;
         };
         if (reading) readPoint(points.find(point => point.label === selection?.value) || points[0]);
         const nearest = (event) => points
@@ -1474,7 +1481,7 @@
           const {point} = nearest(event);
           canvas.style.cursor = point && onPick ? "pointer" : "";
           if (!selection) readPoint(point);
-          const title = point ? `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}` : "";
+          const title = point ? `${point.name ? point.label + " " + point.name : point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}` : "";
           if (canvas.title !== title) canvas.title = title;
         };
         canvas.onpointerdown = selection ? null : event => readPoint(nearest(event).point);
@@ -1942,11 +1949,10 @@
           const key = btn.getAttribute("data-cfilter");
           btn.textContent = labels[key] || "";
           btn.classList.toggle("active", key === STORE.candFilter);
+          btn.setAttribute("aria-pressed", String(key === STORE.candFilter));
         });
 
-        const filtered = STORE.candFilter === "all"
-          ? cands
-          : cands.filter((c) => c.tier === STORE.candFilter);
+        const filtered = visibleCandidates();
 
         if (filtered.length === 0) {
           container.innerHTML = `<div class="empty-box" data-empty-candidates="1" style="grid-column:1/-1;">当前筛选类别下暂无候补方向</div>`;
@@ -1998,15 +2004,21 @@
           : `<div class="empty-box">暂无演进日志</div>`;
       }
 
+      function visibleCandidates() {
+        const candidates = STORE.state?.candidates || [];
+        const order = {upgrade: 0, watch: 1, demote: 2};
+        return candidates.filter(row => STORE.candFilter === "all" || row.tier === STORE.candFilter)
+          .sort((a, b) => (order[a.tier] ?? 3) - (order[b.tier] ?? 3));
+      }
+
       function renderCandidateCharts() {
-        if (!STORE.state || !STORE.state.analytics) return;
-        const assets = Array.isArray(STORE.state.analytics.rotationAssets)
-          ? STORE.state.analytics.rotationAssets
-          : [];
-        const numeric = assets.map(item => ({label: item.sym, x: finiteOrNull(item.r20), y: finiteOrNull(item.r5)}));
-        const colors = value => value > 0 ? getUpColor() : value < 0 ? getDownColor() : "#566f68";
-        const scatter = numeric.filter(point => point.x !== null && point.y !== null)
-          .map(point => ({...point, color: colors(point.y)}));
+        const rows = visibleCandidates();
+        const colors = {upgrade: "#2f7466", watch: "#99601c", demote: "#aa4439"};
+        const numeric = rows.map(item => ({
+          label: item.id, name: item.name, x: finiteOrNull(item.r20), y: finiteOrNull(item.r5),
+          color: colors[item.tier] || "#566f68",
+        }));
+        const scatter = numeric.filter(point => point.x !== null && point.y !== null);
         const plot = document.getElementById("candQuadChart");
         let reading = document.getElementById("candQuadReading");
         if (!reading) {
@@ -2018,7 +2030,7 @@
         reading.hidden = !scatter.length;
         const selector = document.getElementById("rotationSymbol");
         const selected = selector.value;
-        selector.innerHTML = scatter.map(point => `<option>${escapeHtml(point.label)}</option>`).join("");
+        selector.innerHTML = scatter.map(point => `<option value="${escapeHtml(point.label)}">${escapeHtml(point.label)} · ${escapeHtml(point.name)}</option>`).join("");
         if (scatter.some(point => point.label === selected)) selector.value = selected;
         selector.disabled = !scatter.length;
         const redraw = () => drawScatter(plot.id, scatter, "20 日收益 (%)", "5 日收益 (%)", point => {
@@ -2028,15 +2040,18 @@
         selector.onchange = redraw;
         redraw();
 
-        const ranked = numeric.filter(row => row.y !== null).sort((a, b) => b.y - a.y);
-        const limit = Math.max(0.01, ...ranked.map(row => Math.abs(row.y)));
-        document.getElementById("candBarChart").innerHTML = ranked.length ? ranked.map(row => {
-          const span = Math.abs(row.y) / limit * 50;
-          return `<div class="rotation-bar" role="listitem"><span>${escapeHtml(row.label)}</span>
-            <span class="rotation-track" aria-hidden="true"><i class="rotation-fill ${chgClass(row.y)}"
-            style="left:${row.y < 0 ? 50 - span : 50}%;width:${span}%"></i></span>
-            <strong class="${chgClass(row.y)}">${escapeHtml(fmtChg(row.y))}</strong></div>`;
-        }).join("") : '<div class="empty-box">暂无可比收益率</div>';
+        const limit = Math.max(0.01, ...numeric.flatMap(row => [Math.abs(row.x || 0), Math.abs(row.y || 0)]));
+        const bar = (value, period) => {
+          const span = value === null ? 0 : Math.abs(value) / limit * 50;
+          return `<div class="rotation-bar">
+            <span class="rotation-track" aria-hidden="true"><i class="rotation-fill period-${period} ${chgClass(value)}"
+            style="left:${value < 0 ? 50 - span : 50}%;width:${span}%"></i></span>
+            <strong aria-label="${period} 日收益" class="${chgClass(value)}">${escapeHtml(fmtChg(value))}</strong></div>`;
+        };
+        document.getElementById("candBarChart").innerHTML = numeric.length ? numeric.map(row =>
+          `<div class="rotation-group" role="listitem"><strong>${escapeHtml(row.label)}</strong>
+            <div>${bar(row.y, 5)}${bar(row.x, 20)}</div></div>`
+        ).join("") : '<div class="empty-box">当前筛选暂无候补主题</div>';
       }
 
       function renderLinkage() {
@@ -2260,10 +2275,6 @@
             data.labels.forEach((_, index) => ctx[index ? "lineTo" : "moveTo"](...point(index, score)));
             ctx.closePath();
             ctx.stroke();
-            ctx.fillStyle = "#485e5d";
-            ctx.textAlign = "left";
-            const [rx, ry] = point(0, score);
-            ctx.fillText(String(score), rx + 5, ry + 3);
           }
           ctx.textAlign = "center";
           ctx.fillStyle = "#485e5d";
@@ -2487,6 +2498,7 @@
           const f = btn.getAttribute("data-cfilter") || "all";
           STORE.candFilter = f;
           renderCandidates();
+          renderCandidateCharts();
         });
       });
 
