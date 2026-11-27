@@ -165,3 +165,57 @@ def test_deepseek_auth_error_falls_back_without_secret_leak(monkeypatch):
     assert result.engine_mode == 'deterministic_fallback'
     assert '401' in result.fallback_reason
     assert 'private-credential' not in result.fallback_reason
+
+
+def test_deepseek_invalid_output_retries_with_feedback(monkeypatch):
+    from src.research import analyst
+    b, _ = sample()
+    g = evaluate_governance_window(b.fetched_at_utc, has_prev_state=False)
+    draft = build_deterministic_draft(b, None, g)
+    allowed = analyst._collect_context_urls(b)[0][1]
+    for mainline in draft.mainlines:
+        mainline.source_url = allowed
+    prompts = []
+    def fake_call(key, model, prompt, timeout):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            raise ValueError('DeepSeek response incomplete: length')
+        return draft
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-key')
+    monkeypatch.setenv('DESK_LLM_PROVIDER', 'deepseek')
+    monkeypatch.setattr(analyst, '_call_deepseek_sync', fake_call)
+    result = asyncio.run(analyst.synthesize_research_state(b, None, g))
+    assert result.engine_mode == 'deepseek'
+    assert len(prompts) == 2
+    assert 'DeepSeek response incomplete: length' in prompts[1]
+
+
+def test_model_diagnostics_do_not_expose_validation_input():
+    from src.research.analyst import ResearchDraft, _safe_model_error
+    from pydantic import ValidationError
+    try:
+        ResearchDraft.model_validate({'meta': 'secret-model-response'})
+    except ValidationError as exc:
+        message = _safe_model_error(exc)
+    assert 'Schema validation:' in message
+    assert 'secret-model-response' not in message
+    assert _safe_model_error(RuntimeError('secret-key')) == 'RuntimeError'
+
+
+def test_deepseek_failure_is_bounded_and_keeps_old_research(monkeypatch, tmp_path):
+    from src.research import analyst
+    b, state = sample()
+    path = tmp_path / 'state.json'
+    path.write_text(state.model_dump_json(), encoding='utf-8')
+    before = path.read_bytes()
+    calls = []
+    def fail(*args):
+        calls.append(1)
+        raise ValueError('DeepSeek response incomplete: length')
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-key')
+    monkeypatch.setenv('DESK_LLM_PROVIDER', 'deepseek')
+    monkeypatch.setattr(analyst, '_call_deepseek_sync', fail)
+    with pytest.raises(RuntimeError, match='preserving previous accepted research'):
+        asyncio.run(run_research_cycle(b, state_path=path))
+    assert len(calls) == 3
+    assert path.read_bytes() == before

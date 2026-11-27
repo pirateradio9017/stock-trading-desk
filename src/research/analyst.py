@@ -712,6 +712,23 @@ def build_deterministic_draft(
 # ---------------------------------------------------------------------------
 
 
+def _safe_model_error(exc: Exception) -> str:
+    """Log validation locations without exposing model text or credentials."""
+    from pydantic import ValidationError
+    if isinstance(exc, ValidationError):
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        return "Schema validation: " + "; ".join(
+            ".".join(map(str, e["loc"])) + ": " + e["type"] for e in errors[:8]
+        )
+    message = str(exc)
+    if type(exc) is ValueError and message.startswith((
+        "DeepSeek response incomplete:", "DeepSeek returned incorrect research card counts:",
+        "Model returned a source outside the supplied evidence set",
+    )):
+        return message
+    return type(exc).__name__
+
+
 def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec: float = 120.0) -> ResearchDraft:
     """Bounded paid request; validate JSON locally before accepting research."""
     schema = json.dumps(ResearchDraft.model_json_schema(), ensure_ascii=False)
@@ -731,10 +748,10 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
         response.raise_for_status()
         choice = response.json()["choices"][0]
         if choice.get("finish_reason") != "stop":
-            raise ValueError("DeepSeek response incomplete")
+            raise ValueError("DeepSeek response incomplete: " + str(choice.get("finish_reason")))
         draft = ResearchDraft.model_validate_json(choice["message"].get("content") or "")
         if (len(draft.mainlines), len(draft.candidates), len(draft.linkage)) != (5, 6, 4):
-            raise ValueError("DeepSeek returned incorrect research card counts")
+            raise ValueError(f"DeepSeek returned incorrect research card counts: M={len(draft.mainlines)} C={len(draft.candidates)} L={len(draft.linkage)}")
         return draft
 
 
@@ -1017,7 +1034,7 @@ async def synthesize_research_state(
     provider = os.getenv("DESK_LLM_PROVIDER", "auto").strip().lower()
     attempts = []
     if deepseek_key and provider in ("auto", "deepseek"):
-        attempts.append(("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), deepseek_key, _call_deepseek_sync, 120.0))
+        attempts.extend([("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), deepseek_key, _call_deepseek_sync, 120.0)] * 3)
     if api_key and provider in ("auto", "gemini"):
         attempts.extend(("gemini", m, api_key, _call_gemini_sync, timeout_sec) for m in model_chain[:2])
     if use_llm and attempts:
@@ -1052,8 +1069,15 @@ async def synthesize_research_state(
                 if status is None:
                     match = re.search(r"\b(401|402|429|500|502|503|504)\b", str(exc))
                     status = match.group(1) if match else ""
-                last_err = f"{engine}/{model_name}: {type(exc).__name__} {status}"
-                logger.warning("Synthesis failed on %s/%s: %s", engine, model_name, type(exc).__name__)
+                detail = _safe_model_error(exc)
+                last_err = f"{engine}/{model_name}: {detail} {status}"
+                logger.warning("Synthesis failed on %s/%s: %s", engine, model_name, detail)
+                if status and str(status) in ("400", "401", "402", "403", "404"):
+                    break
+                prompt = ("上一轮输出未通过校验：" + detail +
+                          "。请重新生成完整且精简的 JSON，严格满足所有字段和卡片数量，"
+                          "source_url 必须原样复制 VERIFIED_URLS，不得添加其他网址。\n\n" + briefing)
+                await asyncio.sleep(2)
 
         fallback_reason = f"模型调用失败回退定量引擎 ({last_err})"
     else:

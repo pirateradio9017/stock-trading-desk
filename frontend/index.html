@@ -1104,7 +1104,7 @@
         dot.classList.remove("busy", "err");
         if (busy) {
           dot.classList.add("busy");
-          pillText.textContent = "正在刷新行情与研判...";
+          pillText.textContent = "正在读取行情与最新研究...";
           return;
         }
         if (errMsg) {
@@ -1114,12 +1114,20 @@
         }
         const parts = [];
         if (STORE.live && STORE.live.updatedAt) {
-          parts.push("已同步 " + STORE.live.updatedAt);
+          parts.push("行情同步 " + STORE.live.updatedAt);
           parts.push(sessionLabelCn(STORE.live.marketSession));
         } else if (STORE.state && STORE.state.meta && STORE.state.meta.updated_at_short) {
           parts.push("已同步 " + STORE.state.meta.updated_at_short);
         } else {
           parts.push("已同步");
+        }
+        const researchTime = STORE.state?.serverSyncedAt || "";
+        parts.push("研究生成 " + (researchTime || "未知"));
+        const match = researchTime.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}) UTC\+8$/);
+        const researchMs = match ? Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}+08:00`) : NaN;
+        if (!Number.isFinite(researchMs) || Date.now() - researchMs > 3 * 60 * 60 * 1000) {
+          parts.push("研究更新延迟，请检查后台任务");
+          dot.classList.add("err");
         }
         pillText.textContent = parts.join(" · ");
         if (badge && STORE.live) {
