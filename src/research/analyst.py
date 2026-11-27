@@ -69,16 +69,16 @@ _TIER_META: dict[CandidateTier, tuple[str, Tone]] = {
 
 
 class _DraftMeta(BaseModel):
-    market_brief: str = Field(..., min_length=80, max_length=6000, description="必填跨市场增量快报（600-1200字）：按事件分段，写事实与时间、相对上期变化、主线/候补映射、传导假设、待验证点；只使用提供的证据，严禁留空。")
-    badge: str = Field(description="简短市场定调标签，如'高波去杠杆 · 防御与长债避险占优'")
-    headline: str = Field(description="一句话核心交易结论，必须引用真实数据")
-    plain_guide: str = Field(description="2-3句大白话行动指引（只研不交易，聚焦观察与风控）")
-    next_gate: str = Field(description="下一个最关键的时间/宏观/财报催化节点与判定标准")
-    regime: str = Field(description="市场阶段标签，如'避险去杠杆'、'高位震荡分化'、'风险偏好扩张'")
-    stance: str = Field(description="仓位与节奏定调，如'防守优先，控仓等待波动率回落'")
-    vix_note: str = Field(description="基于当前实测 VIX 的一句解读")
-    tnx_note: str = Field(description="基于当前实测 10Y 美债收益率与 TLT 的一句解读")
-    btc_note: str = Field(description="基于当前实测 BTC 价格与涨跌幅的一句流动性解读")
+    market_brief: str = Field(..., min_length=80, max_length=2400, description="必填跨市场精简快报（220-480字）：3-4条编号短讯，写清事实与时间、变化、传导和下一验证；全中文资产名，不堆代码与长文，严禁留空。")
+    badge: str = Field(description="极简市场定调标签（8-14字），如'亚股反弹 · 美股待确认'")
+    headline: str = Field(description="一句话人话标题（≤55字），只放2-3个最核心数字，禁用 NQ=F/GC=F/ASML.AS 等裸代码")
+    plain_guide: str = Field(description="一句到三句大白话行动指引（80-160字），像给人类读的简报：发生了什么、今晚怎么看、风控底线")
+    next_gate: str = Field(description="下一关键时间节点与验证标准（≤70字），紧凑清晰")
+    regime: str = Field(description="市场阶段短标签（6-12字），如'高波修复试探'、'避险去杠杆'")
+    stance: str = Field(description="一句仓位与节奏定调（≤24字），如'不追高，等放量承接，保留防御底仓'")
+    vix_note: str = Field(description="VIX 极简短评（≤24字），不重复主数字")
+    tnx_note: str = Field(description="10Y 美债极简短评（≤24字），不重复主数字")
+    btc_note: str = Field(description="比特币流动性极简短评（≤24字），不重复主数字")
 
 
 class _DraftReasoning(BaseModel):
@@ -90,19 +90,19 @@ class _DraftReasoning(BaseModel):
 
 class _DraftMainline(BaseModel):
     id: Literal["M1", "M2", "M3", "M4", "M5"]
-    title: str = Field(description="主线标题，8-18字")
-    action: str = Field(description="简洁观察定调，如'防御首选'、'控仓等企稳'、'顺势跟踪'、'逢高减压'")
+    title: str = Field(description="主线标题，8-16字，直白易懂")
+    action: str = Field(description="极简观察定调（4-8字），如'防御首选'、'控仓等企稳'、'顺势跟踪'")
     action_tone: Tone
     score: int = Field(description="10-98 整数，主线资金共识与强度评分")
-    status: str = Field(description="一句话现状概述")
-    chain: str = Field(description="至少3步因果传导链，严格使用 ' | ' 分隔，例如 '催化A | 传导B | 资金落脚C'")
+    status: str = Field(description="一句极简现状（≤20字）")
+    chain: str = Field(description="3步精炼因果节点，每步15-30字人话，用 ' | ' 分隔，例如 '亚欧芯片放量反弹 | 资金试探算力龙头承接 | 待美股现货量能确认'")
     stocks: str = Field(description="2-4组 SYM:中文名，逗号分隔，首位必须与 anchor_sym 一致")
     anchor_sym: str = Field(description="核心锚定标的代码，必须来自给定行情列表")
     accel: float = Field(description="加速确认位（正数，须在 anchor_sym 现价附近 0.80x-1.25x，且不等于 flip）")
     flip: float = Field(description="逻辑证伪/翻转位（正数，须在 anchor_sym 现价附近 0.80x-1.25x，且不等于 accel）")
-    plain: str = Field(description="1-2句大白话逻辑")
-    summary: str = Field(description="2-3句专业因果与量价证据拆解")
-    watch_points: str = Field(description="具体盯盘价位/成交量/公告触发条件")
+    plain: str = Field(description="1-2句大白话结论（≤65字），说清为什么看它，不堆代码和重复报价")
+    summary: str = Field(description="简明因果与量价证据拆解（≤140字），分清新增事实、变化与传导假设")
+    watch_points: str = Field(description="2-3条编号盯盘节点（≤90字），如 '1. 关键位承接；2. 失效防守边界'")
     source_url: str = Field(description="必须从 Briefing 的 VERIFIED_URLS 中原样选取一条最相关 URL")
     reasoning: _DraftReasoning | None = None
 
@@ -423,17 +423,22 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
 4. **研究输出结构与跨时区对齐铁律**：
    - **严禁时空错位（最高优先级）**：必须逐条核对 Briefing 标注的报价新鲜度与时间。凡标注为「停盘旧价 / 美股未开盘 / 上日收盘」的美股现货涨跌幅（如前一日收盘的 `NVDA`、`ASML`、`TSM`、`SPY`、`SMH`），**严禁**与今日实时或刚收盘的亚太、欧股、美股期指、大宗商品拼在一起声称“同日背离”或“逆势下跌”！
    - **美股闭市/盘前时的跨时区定价逻辑**：当 `market_session` 为 `OFF_HOURS`、`HOLIDAY` 或 `PRE_MARKET` 时，检验亚欧盘面是否向美股传导，**必须优先看实时美股期指（`ES=F`、`NQ=F`）、亚太芯片龙头现货（`2330.TW`、`000660.KS`、`005930.KS`）、欧股芯片现货（`ASML.AS`）及美股盘前报价（若有）**。若亚欧芯片潮与 `NQ=F`/`ES=F` 共振大涨，应客观定性为“亚欧与期指端风险偏好/芯片链共振走强，待美股开盘现货承接确认”，并明确推演今晚美股开盘重点观察哪些标的（如 `TSM`、`ASML`、`NVDA`、`SMH`）及关键验证位；同时仍须提示中期 20D 回撤、半日市流动性或宏观约束，做到**既锐利前瞻又不盲目追高**。
-   - **首屏聚焦当下最活跃增量**：`headline` 优先聚焦当前活跃时区最新发生的头号跨市场主变化（美股闭市时优先写亚太收盘/欧股开盘/美股期指/大宗商品/BTC 的最新共振或分歧，而非复读两天前的旧收盘价）；`plain_guide` 用三句话分别写清：1) 当前活跃盘面最新事实，2) 向美股下一交易窗口的传导推演，3) 下一步关键验证位与风控边界。
-   - 每条 summary 按“新增事实；较上期变化；传导假设；反证/不确定性”组织。没有新增证据就明确写“本轮无新增证据”，不能把旧闻改写成新催化。
-   - plain 解释为什么值得关注，不重复价格；watch_points 同时写验证条件和失效条件，不将价格涨跌直接等同于基本面逻辑证伪。
-   - 每条主线附 reasoning，hypothesis / confirmation / invalidation / uncertainty 各一句，分别写传导假设、可观察确认条件、反证条件、证据缺口，每句尽量不超过 45 字，避免复述长文。来源时间是媒体发布时间，不能当作事件发生时间。
+   - **首屏聚焦当下最活跃增量（给人读的极简金融排印标准）**：
+     - `headline`（≤55 字）：只提炼当前最核心的 2–3 个数字与主变化，用自然中文资产名（如 `纳指期货涨 2.8%、韩股涨 4.3%、阿斯麦欧股涨 5.2%，今晚半日市看英伟达现货承接`），**严禁堆砌 `NQ=F`、`ES=F`、`ASML.AS`、`GC=F`、`SI=F`、`HG=F`、`BZ=F` 等原始代码**。
+     - `plain_guide`（80–160 字）：用通顺的 2–3 句人话讲清楚“刚刚发生了什么 → 今晚/下阶段怎么看 → 关键验证位与风控底线”，**禁止列举一长串股票代码**。
+     - `next_gate`（≤70 字）：简明写出下一个时间闸口与核心判定条件。
+     - `vix_note` / `tnx_note` / `btc_note`（各 ≤24 字）：只写一句核心状态解读（如 `恐慌回吐，但仍处高位区间`），不要重复卡片已显示的现价和一堆 5D/20D 数字。
+   - 每条主线 `plain`（≤65 字）用大白话直击核心逻辑，不重复报价；`chain` 写 3 步精炼人话节点（每步 15–30 字）；`watch_points` 用 `1. ...；2. ...` 编号写出关键验证位与失效边界（≤90 字）；`summary`（≤140 字）按“新增事实；较上期变化；传导假设；反证/不确定性”精简组织，没有新增证据就直接写“本轮无新增证据”。
+   - 每条主线附 reasoning，hypothesis / confirmation / invalidation / uncertainty 各一句（每句 ≤40 字），避免与正文重复啰嗦。来源时间是媒体发布时间，不能当作事件发生时间。
    - 换锚复核只是候选信号。锁定期沿用已接受锚定标的；开放窗口结合当前量价、估值及独立证据复核，若接受换锚，重新写齐该标的的逻辑、确认位与失效位，禁止继承旧锚价位。
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
    - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
-   - **代理指标与币种/文风硬约束**：`compute`（AI 电力与新云基建动量）与 `semi_demand`（半导体与算力价格动量）的评分本质是 5 日价格动量公式，**严禁将其称为“基本面评分”或编造“价格与基本面背离”**；所有中文正文中**严禁泄露代码内部字段名**（如 `semi_demand`、`chain_id`）；**严禁混淆币种**：美股/商品统一写 `美元` 或 `$`（不得写 `元` 代替美元），`2330.TW` 写 `新台币`，`000660.KS`/`005930.KS` 写 `韩元`，`ASML.AS` 写 `欧元`；若 SEC 公告已附“L1正文摘录”，须直接引用摘录事实说明公告实质，而非一律写“正文未核验”。
+   - **代理指标与币种/文风硬约束**：`compute`（AI 电力与新云基建动量）与 `semi_demand`（半导体与算力价格动量）的评分本质是 5 日价格动量公式，**严禁将其称为“基本面评分”或编造“价格与基本面背离”**；所有中文正文中**严禁泄露代码内部字段名**（如 `semi_demand`、`chain_id`）；**严禁混淆币种**：美股/商品统一写 `美元` 或 `$`（不得写 `元` 代替美元），`2330.TW` 写 `台积电台股` 与 `新台币`，`000660.KS`/`005930.KS` 写 `SK海力士`/`三星电子` 与 `韩元`，`ASML.AS` 写 `阿斯麦欧股` 与 `欧元`；若 SEC 公告已附“L1正文摘录”，须直接引用摘录事实说明公告实质，而非一律写“正文未核验”。
    - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；候补的 `plain` 与 `history_log` 必须与自身 `tier`（升级/跟踪/弱化淘汰）自洽，禁止“分级为弱化淘汰、备注写纳入升级候选”。
-   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。优先覆盖亚太芯片与收盘共振、欧股与欧洲芯片/通胀、美股期指实时定价、商品/央行/政策催化，按素材实际覆盖不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
-5. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，中英文与数字之间保留单个半角空格（如 `NVDA 20D -30.68% 与 VIX 26.80 并存`），中文全角标点前后不加多余空格，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
+   - `market_brief` 输出独立的跨市场精简快报，控制在 **220–480 字**、分 **3–4 条编号短讯**（`1) 亚欧与期指：...`、`2) 利率与商品：...`、`3) 加密与风险：...`），每条 2–3 句写清时间（含时区）、核心变化、传导与下一步验证。**全中文资产名，严禁堆砌原始期货/外盘代码（`NQ=F`/`GC=F`/`SI=F`/`HG=F`/`BZ=F`/`ASML.AS`）和 `对应 M1/C4` 等内部编号**，严禁为了凑字数啰嗦或编造。
+5. **去代码化人话表达铁律**：
+   - **这是给人读的极简金融简报，不是机器日志**。除 `stocks`、`anchor_sym` 结构化字段外，所有中文标题与叙述中一律优先使用自然中文名称（`纳指期货`、`标普期货`、`黄金`、`白银`、`铜`、`布油`、`美油`、`阿斯麦欧股`、`台积电`、`英伟达`、`博通`、`半导体ETF`、`长债ETF`、`能源ETF`、`比特币`、`美元指数`、`近5日`/`近20日`），仅在首次点名关键美股标的时可轻附括号代码如 `英伟达(NVDA)`，绝不连续堆砌英文 Ticker 串或 `5D`/`20D`/`M1/C4` 缩写。
+   - 全部使用简体中文，克制、锐利、去水词，中英文与数字之间保留单个半角空格，中文全角标点前后不加多余空格，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 
 
@@ -550,19 +555,18 @@ def build_deterministic_draft(
     )
 
     headline = (
-        f"标普500 20D {_fmt_pct(spx_r20_opt)} / 纳指 20D {_fmt_pct(ixic_r20_opt)}，"
-        f"VIX {_fmt_num(vix_p)}、10Y {_fmt_num(tnx_p, 2, '%')}，当前格局定调「{regime}」。"
+        f"标普500 近20日 {_fmt_pct(spx_r20_opt)}、纳指 {_fmt_pct(ixic_r20_opt)}，"
+        f"恐慌指数 {_fmt_num(vix_p)}、10Y 美债 {_fmt_num(tnx_p, 2, '%')}，格局定调「{regime}」。"
     )
     plain_guide = (
-        f"当前处于{decision.badge_suffix}，市场情绪由 VIX {_fmt_num(vix_p)} 与长端利率 {_fmt_num(tnx_p, 2, '%')} 主导。"
-        f"策略上坚持{stance}，重点观察各主线加速确认位与证伪防守位得失。"
+        f"当前处于{decision.badge_suffix}，盘面情绪由恐慌指数 {_fmt_num(vix_p)} 与 10Y 美债 {_fmt_num(tnx_p, 2, '%')} 主导。"
+        f"节奏上坚持{stance}，重点盯紧各主线的突破确认位与防守底线。"
     )
 
     det_brief = (
-        f"【跨市场定量摘要】截至 {format_cn_timestamp(bundle.fetched_at_utc)}（{decision.market_session}），"
-        f"标普500 20D {_fmt_pct(spx_r20_opt)}、纳指 20D {_fmt_pct(ixic_r20_opt)}，"
-        f"VIX {_fmt_num(vix_p)}、10Y 美债 {_fmt_num(tnx_p, 2, '%')}、TLT 5D {_fmt_pct(q_tlt.r5 if q_tlt else None)}。"
-        f"当前由定量降级引擎维持骨架，下一验证节点：{next_gate}。"
+        f"1) 盘面快照：截至 {format_cn_timestamp(bundle.fetched_at_utc)}，标普500 近20日 {_fmt_pct(spx_r20_opt)}、纳指 {_fmt_pct(ixic_r20_opt)}，"
+        f"恐慌指数 {_fmt_num(vix_p)}、10Y 美债 {_fmt_num(tnx_p, 2, '%')}、长债ETF 近5日 {_fmt_pct(q_tlt.r5 if q_tlt else None)}。\n\n"
+        f"2) 下一节点：当前由定量引擎维持主线骨架，重点关注 {next_gate}。"
     )
 
     meta = _DraftMeta(
@@ -573,9 +577,9 @@ def build_deterministic_draft(
         next_gate=next_gate,
         regime=regime,
         stance=stance,
-        vix_note=f"VIX 报 {_fmt_num(vix_p)}（日 {_fmt_pct(q_vix.chg if q_vix else None)}，20D {_fmt_pct(q_vix.r20 if q_vix else None)}），{'避险对冲溢价偏高' if (vix_p or 0) >= 20 else '波动率处于可控区间'}",
-        tnx_note=f"10Y 美债报 {_fmt_num(tnx_p, 2, '%')}（5D {_fmt_pct(q_tnx.r5 if q_tnx else None)}），TLT 5D {_fmt_pct(q_tlt.r5 if q_tlt else None)}",
-        btc_note=f"BTC 报 {f'${q_btc.price:,.0f}' if (q_btc and q_btc.price is not None) else 'DATA_PENDING'}（日 {_fmt_pct(q_btc.chg if q_btc else None)}，20D {_fmt_pct(q_btc.r20 if q_btc else None)}）",
+        vix_note=f"近20日 {_fmt_pct(q_vix.r20 if q_vix else None)}，{'避险溢价偏高' if (vix_p or 0) >= 20 else '波动相对可控'}",
+        tnx_note=f"近5日 {_fmt_pct(q_tnx.r5 if q_tnx else None)}，长债ETF {_fmt_pct(q_tlt.r5 if q_tlt else None)}",
+        btc_note=f"日 {_fmt_pct(q_btc.chg if q_btc else None)}，近20日 {_fmt_pct(q_btc.r20 if q_btc else None)}",
     )
 
     # 5 dynamic market theme clusters ranked by live quantitative momentum & consensus
@@ -861,7 +865,7 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
         }, json={
             "model": model_name,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT + "\n在保证证据、传导与反证完整的前提下避免重复，所有中文叙述合计控制在6000字以内，优先完整输出全部必填字段（包括 meta.market_brief 跨市场增量快报，严禁省略或留空）。\nReturn only a JSON object matching this JSON Schema:\n" + schema},
+                {"role": "system", "content": _SYSTEM_PROMPT + "\n这是给人读的极简金融简报：全部中文叙述精炼在3500字以内，用自然中文资产名替代原始期货/外盘代码，完整输出全部必填字段（包括精简版 meta.market_brief，严禁留空）。\nReturn only a JSON object matching this JSON Schema:\n" + schema},
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
