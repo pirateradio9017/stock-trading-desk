@@ -518,10 +518,12 @@ def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     from pathlib import Path
     import yaml
     from src.config import (
+        SCHEDULE_ACTIVE_HALF_HOUR_CRON,
         SCHEDULE_ACTIVE_ODD_CRON,
         SCHEDULE_BASELINE_CRON,
         SCHEDULE_CROSS_MARKET_CRON,
         SCHEDULE_REBALANCE_CRON,
+        SCHEDULE_SESSION_20M_CRON,
         resolve_research_schedule,
     )
 
@@ -532,6 +534,8 @@ def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     assert SCHEDULE_BASELINE_CRON in crons
     assert SCHEDULE_ACTIVE_ODD_CRON in crons
     assert SCHEDULE_CROSS_MARKET_CRON in crons
+    assert SCHEDULE_SESSION_20M_CRON in crons
+    assert SCHEDULE_ACTIVE_HALF_HOUR_CRON in crons
     assert SCHEDULE_REBALANCE_CRON in crons
     rebal_entry = next(entry for entry in on_cfg['schedule'] if entry['cron'] == SCHEDULE_REBALANCE_CRON)
     assert rebal_entry.get('timezone') == 'America/New_York'

@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from src.config import APP_VERSION, PROJECT_ROOT, format_cn_timestamp, format_utc_iso, load_settings
+from src.config import APP_VERSION, PROJECT_ROOT, format_cn_timestamp, format_utc_iso, get_market_session, load_settings
 from src.ingestion.market_data import fetch_market_snapshot
 from src.ingestion.news_aggregator import fetch_aggregated_news
 from src.models.schemas import HealthResponse, LiveResponse, NewsResponse, StateResponse
@@ -24,7 +24,10 @@ from src.pipeline import atomic_write_json
 logger = logging.getLogger(__name__)
 
 FRONTEND_PATH = PROJECT_ROOT / "frontend" / "index.html"
-CACHE_TTL_SEC = 180.0
+CACHE_TTL_SEC = 30.0
+LIVE_CACHE_TTL_ACTIVE_SEC = 30.0
+LIVE_CACHE_TTL_IDLE_SEC = 120.0
+NEWS_CACHE_TTL_SEC = 60.0
 
 app = FastAPI(
     title="美股交易链条观察 · Stock Trading Desk",
@@ -107,18 +110,23 @@ def _json_response(model: Any) -> JSONResponse:
     )
 
 
+def _live_cache_ttl_sec() -> float:
+    return LIVE_CACHE_TTL_ACTIVE_SEC if get_market_session() in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"} else LIVE_CACHE_TTL_IDLE_SEC
+
+
 async def _get_or_refresh_live(*, force: bool = False) -> LiveResponse:
     data_dir = _data_dir()
     live_path = data_dir / "live.json"
     cached = _read_json_model(live_path, LiveResponse)
+    ttl_sec = _live_cache_ttl_sec()
 
-    if not force and cached is not None and _file_age_seconds(live_path) <= CACHE_TTL_SEC:
+    if not force and cached is not None and _file_age_seconds(live_path) <= ttl_sec:
         return cached
 
     async with _live_lock:
         # Re-check inside lock in case another concurrent request just refreshed it.
         cached = _read_json_model(live_path, LiveResponse)
-        if not force and cached is not None and _file_age_seconds(live_path) <= CACHE_TTL_SEC:
+        if not force and cached is not None and _file_age_seconds(live_path) <= ttl_sec:
             return cached
         try:
             snap = await fetch_market_snapshot(include_screener=False)
@@ -139,12 +147,12 @@ async def _get_or_refresh_news(*, force: bool = False) -> NewsResponse:
     news_path = data_dir / "news.json"
     cached = _read_json_model(news_path, NewsResponse)
 
-    if not force and cached is not None and _file_age_seconds(news_path) <= CACHE_TTL_SEC:
+    if not force and cached is not None and _file_age_seconds(news_path) <= NEWS_CACHE_TTL_SEC:
         return cached
 
     async with _news_lock:
         cached = _read_json_model(news_path, NewsResponse)
-        if not force and cached is not None and _file_age_seconds(news_path) <= CACHE_TTL_SEC:
+        if not force and cached is not None and _file_age_seconds(news_path) <= NEWS_CACHE_TTL_SEC:
             return cached
         try:
             agg = await fetch_aggregated_news()

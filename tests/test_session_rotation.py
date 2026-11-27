@@ -28,9 +28,37 @@ def test_same_session_alignment_and_dynamic_leadership():
 
 
 def test_extra_runs_respect_holidays_and_early_closes():
+    from src.config import SCHEDULE_ACTIVE_HALF_HOUR_CRON, SCHEDULE_SESSION_20M_CRON
     assert resolve_research_schedule("schedule", "38 9 * * 1-5", NOW+timedelta(hours=3, minutes=23)).run
+    assert resolve_research_schedule("schedule", SCHEDULE_SESSION_20M_CRON, NOW).run
+    assert not resolve_research_schedule("schedule", SCHEDULE_SESSION_20M_CRON, NOW+timedelta(hours=8)).run
+    assert resolve_research_schedule("schedule", SCHEDULE_ACTIVE_HALF_HOUR_CRON, NOW+timedelta(hours=8)).run  # early-close AFTER_HOURS
+    assert not resolve_research_schedule("schedule", SCHEDULE_ACTIVE_HALF_HOUR_CRON, NOW-timedelta(days=1)).run
     assert not resolve_research_schedule("schedule", "43 4-8,10-15 * * 1-5", NOW+timedelta(hours=8)).run
     assert not resolve_research_schedule("schedule", "43 4-8,10-15 * * 1-5", NOW-timedelta(days=1)).run
+
+
+def test_cnbc_batch_print_parsing_for_premarket_and_intraday():
+    from src.ingestion.session_rotation import parse_cnbc_print
+    pre_spy = parse_cnbc_print({
+        "symbol": "SPY",
+        "curmktstatus": "PRE_MKT",
+        "ExtendedMktQuote": {"type": "PRE_MKT", "last": "728.40", "change_pct": "+1.63%", "last_time": "2026-11-27T06:14:50.419-0500"},
+    }, NOW, "PRE_MARKET")
+    assert pre_spy is not None and pre_spy.price == 728.4 and pre_spy.change == 1.63
+    assert parse_cnbc_print({
+        "symbol": "ITB",
+        "curmktstatus": "PRE_MKT",
+        "ExtendedMktQuote": {"type": "PRE_MKT", "last": "99.20", "change_pct": "+0.87%", "last_time": "2026-11-27T04:10:00.000-0500"},
+    }, NOW, "PRE_MARKET") is None
+    intra_now = datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc)
+    assert parse_cnbc_print({
+        "symbol": "SPY", "curmktstatus": "REG_MKT", "last": "716.70", "change_pct": "-0.29%", "last_time": "2026-11-25",
+    }, intra_now, "INTRADAY") is None
+    intra_spy = parse_cnbc_print({
+        "symbol": "SPY", "curmktstatus": "REG_MKT", "last": "731.20", "change_pct": "+2.02%", "last_time": "2026-11-27T09:59:10.000-0500",
+    }, intra_now, "INTRADAY")
+    assert intra_spy is not None and intra_spy.price == 731.2 and intra_spy.change == 2.02
 
 
 def test_session_print_preserves_price_and_setups_classify_quality_dips_and_rate_traps():

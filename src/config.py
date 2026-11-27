@@ -557,6 +557,8 @@ def format_utc_iso(dt: datetime | None = None) -> str:
 SCHEDULE_BASELINE_CRON = "13 */2 * * *"
 SCHEDULE_ACTIVE_ODD_CRON = "13 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
 SCHEDULE_CROSS_MARKET_CRON = "40 6,8 * * 1-5"
+SCHEDULE_SESSION_20M_CRON = "23 4-15 * * 1-5"
+SCHEDULE_ACTIVE_HALF_HOUR_CRON = "43 4-8,10-19 * * 1-5"
 SCHEDULE_REBALANCE_CRON = "32 13,16 * * 1-5"
 
 
@@ -596,8 +598,17 @@ def resolve_research_schedule(
     if event_name == "workflow_dispatch":
         return ScheduleSlotDecision(True, False, session, window, "workflow_dispatch")
 
-    if sched in {"43 4-8,10-15 * * 1-5", "38 9 * * 1-5"}:
+    if sched in {"43 4-8,10-15 * * 1-5", SCHEDULE_SESSION_20M_CRON, "38 9 * * 1-5"}:
         return ScheduleSlotDecision(session in {"PRE_MARKET", "INTRADAY"}, False, session, window, "session_rotation")
+
+    if sched == SCHEDULE_ACTIVE_HALF_HOUR_CRON:
+        return ScheduleSlotDecision(
+            session in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"},
+            False,
+            session,
+            window,
+            "active_half_hour",
+        )
 
     if sched == SCHEDULE_BASELINE_CRON:
         return ScheduleSlotDecision(True, False, session, window, "baseline_2h")

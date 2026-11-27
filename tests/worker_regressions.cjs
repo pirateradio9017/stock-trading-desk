@@ -205,7 +205,7 @@ process.on('beforeExit', () => {
   };
   const st1 = await ctx.worker.fetch(new Request('https://test/api/state?t=11111'), stateEnv, {});
   assert.equal(st1.status, 200);
-  assert.equal(st1.headers.get('cache-control'), 'public, max-age=30, s-maxage=60, stale-while-revalidate=300');
+  assert.equal(st1.headers.get('cache-control'), 'public, max-age=15, s-maxage=30, stale-while-revalidate=120');
   const stEtag = st1.headers.get('etag');
   assert.ok(stEtag && stEtag.startsWith('W/"state-'));
   assert.equal(stateKvReads, 1);
@@ -262,10 +262,10 @@ process.on('beforeExit', () => {
     },
   };
   ctx.fetch = async (url, opts) => {
-    assert.ok(opts && opts.signal, 'Yahoo fetch must pass AbortSignal');
-    fetchCount++;
+    assert.ok(opts && opts.signal, 'Upstream fetch must pass AbortSignal');
+    if (String(url).includes('yahoo.com')) fetchCount++;
     await new Promise((r) => setTimeout(r, 15));
-    return makeYahooResponse(555);
+    return String(url).includes('yahoo.com') ? makeYahooResponse(555) : { ok: false, status: 404 };
   };
   const pendingWaitUntil = [];
   const swrCtx = { waitUntil: (p) => pendingWaitUntil.push(p) };
@@ -274,7 +274,7 @@ process.on('beforeExit', () => {
   const swrElapsed = Date.now() - t0;
   assert.equal(swrResp.status, 200);
   assert.equal(swrResp.headers.get('x-desk-cache'), 'KV-STALE');
-  assert.equal(swrResp.headers.get('cache-control'), 'public, max-age=15, s-maxage=30, stale-while-revalidate=180');
+  assert.equal(swrResp.headers.get('cache-control'), 'public, max-age=10, s-maxage=15, stale-while-revalidate=60');
   const swrJson = await swrResp.json();
   assert.equal(swrJson.updatedAt, staleLive.updatedAt, 'SWR must return cached data immediately with honest timestamp');
   assert.ok(swrElapsed < 150, `SWR response should be near-instant, took ${swrElapsed}ms`);
@@ -309,7 +309,8 @@ process.on('beforeExit', () => {
   let active = 0;
   let maxConcurrent = 0;
   let dedupFetches = 0;
-  ctx.fetch = async () => {
+  ctx.fetch = async (url) => {
+    if (!String(url).includes('yahoo.com')) return { ok: false, status: 404 };
     dedupFetches++;
     active++;
     if (active > maxConcurrent) maxConcurrent = active;
@@ -565,16 +566,24 @@ process.on('beforeExit', () => {
   assert.equal(euDec.shouldDispatch, true);
   assert.equal(euDec.reason, 'cross_market_eu_open');
 
-  // Active US intraday (2026-11-25 15:00 UTC = 10:00 ET): 60m old state triggers hourly dispatch
+  // Active US intraday (2026-11-25 15:00 UTC = 10:00 ET): 25m old state triggers 20m active dispatch
   const activeNow = new Date('2026-11-25T15:00:00Z');
-  const staleActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 60 * 60_000)), history: [] };
-  const freshActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 20 * 60_000)), history: [] };
+  const staleActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 25 * 60_000)), history: [] };
+  const freshActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 10 * 60_000)), history: [] };
   assert.equal(ctx.evaluateResearchDispatch(staleActiveState, null, activeNow).shouldDispatch, true);
-  assert.equal(ctx.evaluateResearchDispatch(staleActiveState, null, activeNow).reason, 'active_hourly_due');
+  assert.equal(ctx.evaluateResearchDispatch(staleActiveState, null, activeNow).reason, 'active_20m_due');
   assert.equal(ctx.evaluateResearchDispatch(freshActiveState, null, activeNow).shouldDispatch, false);
-  // Cooldown prevents duplicate dispatch
+  // Weekday off-hours (2026-11-25 04:00 UTC = 23:00 ET prior day, Wed Asia open): 60m triggers hourly dispatch
+  const weekdayIdleNow = new Date('2026-11-25T05:00:00Z');
+  const staleWeekdayState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(weekdayIdleNow.getTime() - 60 * 60_000)), history: [] };
+  assert.equal(ctx.evaluateResearchDispatch(staleWeekdayState, null, weekdayIdleNow).reason, 'weekday_hourly_due');
+  // Weekend off-hours (2026-11-28 15:00 UTC = Sat 10:00 ET): 80m stays fresh, 120m triggers 2h dispatch
+  const weekendNow = new Date('2026-11-28T15:00:00Z');
+  assert.equal(ctx.evaluateResearchDispatch({ serverSyncedAt: ctx.formatCnTimestamp(new Date(weekendNow.getTime() - 80 * 60_000)), history: [] }, null, weekendNow).shouldDispatch, false);
+  assert.equal(ctx.evaluateResearchDispatch({ serverSyncedAt: ctx.formatCnTimestamp(new Date(weekendNow.getTime() - 120 * 60_000)), history: [] }, null, weekendNow).reason, 'idle_2h_due');
+  // Cooldown (12m) prevents duplicate dispatch
   assert.equal(
-    ctx.evaluateResearchDispatch(staleActiveState, { lastDispatchedAt: new Date(activeNow.getTime() - 10 * 60_000).toISOString() }, activeNow).reason,
+    ctx.evaluateResearchDispatch(staleActiveState, { lastDispatchedAt: new Date(activeNow.getTime() - 8 * 60_000).toISOString() }, activeNow).reason,
     'cooldown'
   );
   // Post-close rebalance on early-close day 2026-11-27 13:35 ET (18:35 UTC) triggers rebalance even if state is 25m old
@@ -661,9 +670,45 @@ process.on('beforeExit', () => {
   assert.equal(edgeRot.themes.length, 1);
   assert.equal(edgeRot.themes[0].name, '光模块与高速互联');
   assert.equal(edgeRot.themes[0].excess, 6.73);
+  // Blank percentageChange in Nasdaq payload must return null, never coerce to 0
+  assert.equal(ctx.parseNasdaqPrint('ITB', {
+    marketStatus: 'Pre-Market',
+    primaryData: { lastSalePrice: '$98.34', percentageChange: '', lastTradeTimestamp: 'Nov 27, 2026 6:31 AM ET' },
+  }, preNow, 'PRE_MARKET'), null);
+
+  // CNBC batch real-time parser: PRE_MARKET + INTRADAY + stale/date-only rejection
+  const cnbcPreSpy = ctx.parseCnbcPrint({
+    symbol: 'SPY',
+    curmktstatus: 'PRE_MKT',
+    ExtendedMktQuote: { type: 'PRE_MKT', last: '728.46', change_pct: '+1.64%', last_time: '2026-11-27T06:31:36.251-0500' },
+  }, preNow, 'PRE_MARKET');
+  const cnbcPreAsml = ctx.parseCnbcPrint({
+    symbol: 'ASML',
+    curmktstatus: 'PRE_MKT',
+    ExtendedMktQuote: { type: 'PRE_MKT', last: '1,336.73', change_pct: '+2.58%', last_time: '2026-11-27T06:31:30.000-0500' },
+  }, preNow, 'PRE_MARKET');
+  assert.equal(cnbcPreSpy.price, 728.46);
+  assert.equal(cnbcPreSpy.change, 1.64);
+  assert.equal(cnbcPreAsml.price, 1336.73);
+  assert.equal(ctx.parseCnbcPrint({
+    symbol: 'SPY',
+    curmktstatus: 'REG_MKT',
+    last: '716.70',
+    change_pct: '-0.29%',
+    last_time: '2026-11-25',
+  }, new Date('2026-11-27T15:00:00Z'), 'INTRADAY'), null);
+  const cnbcRegSpy = ctx.parseCnbcPrint({
+    symbol: 'SPY',
+    curmktstatus: 'REG_MKT',
+    last: '731.20',
+    change_pct: '+2.02%',
+    last_time: '2026-11-27T09:59:10.000-0500',
+  }, new Date('2026-11-27T15:00:00Z'), 'INTRADAY');
+  assert.equal(cnbcRegSpy.price, 731.2);
+  assert.equal(cnbcRegSpy.change, 2.02);
 
   testsCompleted = true;
-  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance, GitHub dispatch & edge Nasdaq session rotation)');
+  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance, GitHub dispatch, CNBC batch & Nasdaq session rotation)');
 })().catch((e) => {
   testsCompleted = true;
   console.error(e);

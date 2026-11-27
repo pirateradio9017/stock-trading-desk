@@ -34,6 +34,7 @@
     }
 
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html { font-size: 16px; }
     body {
       margin: 0;
@@ -56,7 +57,7 @@
     .hdr { margin-bottom: 14px; }
     .hdr-top { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items:start; gap:12px; }
     .hdr-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
-    .hdr h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--ink); }
+    .hdr h1 { margin: 0; padding-left: 0.5em; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--ink); }
     .subtitle { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
     .btn-row { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
@@ -1297,6 +1298,7 @@
           plotEl.innerHTML = '<div class="empty-box">具备正远期市盈率与 52 周回撤数据的标的将显示于此，下方卡片展示全部观察锚。</div>';
         }
 
+        const qm = quoteMap();
         const cardsEl = document.getElementById("setupCards");
         cardsEl.innerHTML = visible.length ? visible.map((row, idx) => {
           const v = row.valuation || {};
@@ -1304,7 +1306,9 @@
           const pe = numOrNull(v.forward_pe);
           const disc = numOrNull(v.forward_pe_discount_pct);
           const rr = numOrNull(row.reward_risk);
-          const lp = numOrNull(row.last_price);
+          const eff = effectiveQuoteDisplay(qm[row.symbol]);
+          const lp = (eff && numOrNull(eff.price) !== null) ? eff.price : numOrNull(row.last_price);
+          const isPre = Boolean(eff && eff.isPre && numOrNull(eff.price) !== null);
           const inv = numOrNull(row.invalidation_price);
           const tgt = numOrNull(row.target_price);
           const tone = (SETUP_TONE[row.category] || SETUP_TONE.watch)[0];
@@ -1317,9 +1321,10 @@
           if (lp !== null && inv !== null && tgt !== null && tgt > inv) {
             pinPct = Math.max(5, Math.min(95, (lp - inv) / (tgt - inv) * 100));
           }
+          const pxDisp = lp !== null ? (isPre ? "盘前 " : "") + fmtPrice(row.symbol, lp) : "--";
           const src = safeUrl(row.source_url);
           return `
-            <article class="setup-card" tabindex="-1" data-setup-idx="${idx}">
+            <article class="setup-card" tabindex="-1" data-setup-idx="${idx}" data-setup-sym="${esc(row.symbol)}" data-inv="${inv !== null ? inv : ""}" data-tgt="${tgt !== null ? tgt : ""}">
               <div class="setup-top">
                 <div>
                   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -1332,14 +1337,14 @@
                 <span class="pill tone-${tone}">${esc(row.category_label || "待观察")}</span>
               </div>
               <div class="setup-nums">
-                <div><span>现价锚</span><strong>${esc(lp !== null ? fmtPrice(row.symbol, lp) : "--")}</strong></div>
+                <div><span>现价锚</span><strong class="setup-cur-px">${esc(pxDisp)}</strong></div>
                 <div><span>距52W高点</span><strong style="color:var(--terra);">${dd !== null ? "-" + Math.abs(dd).toFixed(1) + "%" : "--"}</strong></div>
                 <div><span>盈亏比</span><strong style="color:var(--sage);">${rr !== null ? rr.toFixed(1) + " : 1" : "--"}</strong></div>
               </div>
               <div>
                 <div class="ladder-labels">
                   <span style="color:var(--terra);">防守 ${esc(inv !== null ? fmtPrice(row.symbol, inv) : "--")}</span>
-                  <span style="color:var(--ink);font-weight:700;">现价 ${esc(lp !== null ? fmtPrice(row.symbol, lp) : "--")}</span>
+                  <span class="setup-ladder-px" style="color:var(--ink);font-weight:700;">现价 ${esc(pxDisp)}</span>
                   <span style="color:var(--sage);">目标 ${esc(tgt !== null ? fmtPrice(row.symbol, tgt) : "--")}</span>
                 </div>
                 <div class="ladder-track"><div class="ladder-pin" style="left:${pinPct.toFixed(1)}%;"></div></div>
@@ -1351,6 +1356,27 @@
             </article>
           `;
         }).join("") : '<div class="empty-box" style="grid-column:1/-1;">当前筛选下暂无观察标的</div>';
+      }
+
+      function patchSetupsLive() {
+        const qm = quoteMap();
+        document.querySelectorAll(".setup-card[data-setup-sym]").forEach(card => {
+          const sym = card.getAttribute("data-setup-sym");
+          const eff = effectiveQuoteDisplay(qm[sym]);
+          if (!eff || numOrNull(eff.price) === null) return;
+          const pxDisp = (eff.isPre ? "盘前 " : "") + fmtPrice(sym, eff.price);
+          const curEl = card.querySelector(".setup-cur-px");
+          const ladEl = card.querySelector(".setup-ladder-px");
+          if (curEl) curEl.textContent = pxDisp;
+          if (ladEl) ladEl.textContent = "现价 " + pxDisp;
+          const inv = Number(card.getAttribute("data-inv"));
+          const tgt = Number(card.getAttribute("data-tgt"));
+          const pin = card.querySelector(".ladder-pin");
+          if (pin && Number.isFinite(inv) && Number.isFinite(tgt) && tgt > inv) {
+            const pct = Math.max(5, Math.min(95, (eff.price - inv) / (tgt - inv) * 100));
+            pin.style.left = pct.toFixed(1) + "%";
+          }
+        });
       }
 
       /* Tab 2: Candidates */
@@ -1432,31 +1458,44 @@
         }
       }
 
+      function getActiveSessionRotation() {
+        const samples = [STORE.state?.session_rotation, STORE.live?.session_rotation].filter(Boolean)
+          .sort((a, b) => Date.parse(b.sampled_utc) - Date.parse(a.sampled_utc));
+        const sig = samples[0] || null;
+        const session = STORE.live?.marketSession || STORE.state?.session_rotation?.session || "";
+        const active = ["PRE_MARKET", "INTRADAY"].includes(session);
+        const age = sig ? Date.now() - Date.parse(sig.sampled_utc) : Infinity;
+        if (!active || !sig || sig.session !== session || !(age >= -60000 && age < 60 * 60000)) {
+          return { active, session, sig: null };
+        }
+        return { active, session, sig };
+      }
+
       function renderSessionRotation() {
         const box = document.getElementById("sessionRotation");
         const lead = document.getElementById("rotationLead");
-        const historic = STORE.state?.candidates?.[0]?.name;
-        if (lead && historic) lead.textContent = "多日动量 · " + historic;
-        const samples = [STORE.state?.session_rotation, STORE.live?.session_rotation].filter(Boolean)
-          .sort((a,b) => Date.parse(b.sampled_utc) - Date.parse(a.sampled_utc));
-        const sig = samples[0];
-        const session = STORE.live?.marketSession;
-        const active = ["PRE_MARKET","INTRADAY"].includes(session);
-        const age = sig ? Date.now() - Date.parse(sig.sampled_utc) : Infinity;
-        if (!active || !sig || sig.session !== session || !(age >= 0 && age < 60*60000)) {
+        const noteEl = document.getElementById("rotationNote");
+        const historic = STORE.state?.candidates?.[0];
+        if (lead && historic?.name) lead.textContent = "多日动量 · " + historic.name;
+        const { active, session, sig } = getActiveSessionRotation();
+        if (!sig) {
           box.textContent = active ? "当场主题比较等候新一轮有效成交。" : "";
           return;
         }
         const stage = session === "PRE_MARKET" ? "盘前" : "盘中";
         const fmtTime = stamp => new Date(stamp).toLocaleTimeString("en-GB", {timeZone:"America/New_York",hour:"2-digit",minute:"2-digit"});
+        const fmtTimeSec = stamp => new Date(stamp).toLocaleTimeString("en-GB", {timeZone:"America/New_York",hour:"2-digit",minute:"2-digit",second:"2-digit"});
         const top = sig.themes[0];
-        const coverage = `${sig.themes.length}/${sig.universe} 个主题可比 · ${fmtTime(sig.sampled_utc)} ET 采样`;
+        const coverage = `${sig.themes.length}/${sig.universe} 个主题可比 · ${fmtTimeSec(sig.sampled_utc)} ET 实时采样（30秒自动刷新）`;
         if (!top || sig.themes.length < 2) {
-          box.textContent = stage + "成交覆盖不足，暂缓比较。"+coverage;
+          box.textContent = stage + "成交覆盖不足，暂缓比较。" + coverage;
           return;
         }
         const label = top.excess > 0 && top.change > 0 ? stage+"领涨" : stage+"相对最强";
         if (lead) lead.textContent = `${label} · ${top.name}（${fmtChg(top.change)}）`;
+        if (noteEl && historic?.name && historic.as_of && top.name !== historic.name) {
+          noteEl.textContent = `口径对照：今日${stage}实时领涨为「${top.name}」（${fmtChg(top.change)}）；下方多日收盘动量截至 ${historic.as_of}，榜首为「${historic.name}」（5日 ${fmtChg(historic.r5)}），两者分歧代表短线修复与中期防御切换。`;
+        }
         const wasOpen = box.querySelector("details")?.open;
         const board = sig.themes.slice(0, 5).map((t, idx) => `
           <div class="session-rank-row${idx === 0 ? " is-top" : ""}">
@@ -1476,13 +1515,58 @@
           <div class="session-rank-list">${board}</div>
           <small>${esc(coverage)}</small><details class="quiet"${wasOpen ? " open" : ""}><summary>查看全部当场逐笔成交与口径</summary>
           <p>按篮子相对 SPY 的当场涨跌排序，全部成员须有采样前 20 分钟内成交，与基准的成交时间跨度最多 10 分钟。SPY ${esc(fmtChg(sig.benchmark.change))}（${esc(fmtTime(sig.benchmark.trade_utc))} ET）。</p>
-          ${rows}<a class="src-link" href="https://www.nasdaq.com/market-activity/etf/spy" target="_blank" rel="noopener noreferrer">Nasdaq 行情来源 ↗</a></details></div>`;
+          ${rows}<a class="src-link" href="https://www.nasdaq.com/market-activity/etf/spy" target="_blank" rel="noopener noreferrer">Nasdaq / CNBC 实时成交口径 ↗</a></details></div>`;
+      }
+
+      function patchCandidatesLive() {
+        const { session, sig } = getActiveSessionRotation();
+        const stage = session === "PRE_MARKET" ? "盘前" : "盘中";
+        const themeMap = Object.create(null);
+        for (const t of (sig?.themes || [])) if (t?.name) themeMap[t.name] = t;
+        document.querySelectorAll(".cand-card[data-cand-name]").forEach(card => {
+          const pill = card.querySelector(".cand-live-pill");
+          const readEl = card.querySelector(".cand-read");
+          const liveT = themeMap[card.getAttribute("data-cand-name")];
+          if (pill) {
+            if (liveT) {
+              pill.hidden = false;
+              pill.className = `pill cand-live-pill ${chgCls(liveT.change)}`;
+              pill.textContent = `${stage} ${fmtChg(liveT.change)} · 超标普 ${liveT.excess > 0 ? "+" : ""}${Number(liveT.excess).toFixed(2)}pp`;
+            } else {
+              pill.hidden = true;
+              pill.textContent = "";
+            }
+          }
+          if (readEl) {
+            const baseTxt = readEl.dataset.basePlain ?? readEl.textContent;
+            if (readEl.dataset.basePlain === undefined) readEl.dataset.basePlain = baseTxt;
+            const stripped = baseTxt.replace(/\s*今日(?:盘前|盘中)等权[^。]*。/g, "").trim();
+            readEl.textContent = liveT
+              ? `${stripped} 今日${stage}等权 ${fmtChg(liveT.change)}（相对标普 ${liveT.excess > 0 ? "+" : ""}${Number(liveT.excess).toFixed(2)} 个百分点）。`
+              : stripped;
+          }
+        });
+        const overseas = document.getElementById("overseasWatch");
+        if (overseas && STORE.live?.marketSession === "PRE_MARKET") {
+          const qm = quoteMap();
+          const pts = [["2330.TW", "台积电台股"], ["000660.KS", "SK海力士"], ["ASML.AS", "阿斯麦欧股"]]
+            .map(([sym, lbl]) => {
+              const q = qm[sym];
+              if (!q || numOrNull(q.chg) === null) return null;
+              const age = q.tsUtc ? Date.now() - Date.parse(q.tsUtc) : Infinity;
+              return Number.isFinite(age) && age >= -60000 && age <= 15 * 3600000 ? `${lbl} ${fmtChg(q.chg)}` : null;
+            }).filter(Boolean);
+          if (pts.length) {
+            overseas.textContent = "盘前海外观察 · " + pts.join("、") + "。开盘后核对美国晶圆与设备股是否承接，光模块须另看自身报价。";
+            overseas.hidden = false;
+          }
+        }
       }
 
       function renderCandidates() {
+        document.getElementById("rotationNote").textContent = STORE.state?.rotation_note || "上期研究候补";
         renderSessionRotation();
         const all = STORE.state?.candidates || [];
-        document.getElementById("rotationNote").textContent = STORE.state?.rotation_note || "上期研究候补";
         const comparison = document.getElementById("themeComparison");
         const themes = STORE.state?.theme_comparison || [];
         comparison.parentElement.hidden = !themes.length;
@@ -1508,7 +1592,7 @@
         el.innerHTML = rows.length ? rows.map(c => {
           const stocksLabel = parseStocks(c.stocks).map(p => `${p.name}(${p.sym})`).join("、");
           return `
-            <article class="cand-card" data-cand-id="${esc(c.id)}">
+            <article class="cand-card" data-cand-id="${esc(c.id)}" data-cand-name="${esc(c.name)}">
               <div class="kpi-row">
                 <div style="display:flex;align-items:center;gap:6px;">
                   <span class="mini-tag">${esc(c.id)}</span>
@@ -1519,6 +1603,7 @@
               <div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <span class="pill ${chgCls(c.r5)}">5日 ${esc(fmtChg(c.r5))}</span>
                 <span class="pill ${chgCls(c.r20)}">20日 ${esc(fmtChg(c.r20))}</span>
+                <span class="pill cand-live-pill chg-flat" hidden></span>
               </div>
               <h3 class="cand-title">${fmtHtml(c.name)}</h3>
               <div class="muted" style="font-size:14px;">挂钩：${esc(c.linked_to)} · ${esc(stocksLabel || "--")}</div>
@@ -1527,6 +1612,7 @@
             </article>
           `;
         }).join("") : '<div class="empty-box" style="grid-column:1/-1;">当前筛选下暂无候补方向</div>';
+        patchCandidatesLive();
         renderCandidateCharts();
       }
 
@@ -1808,7 +1894,7 @@
           if (!Array.isArray(r.data?.quotes)) throw new Error("行情格式异常");
           STORE.live = r.data; STORE.liveSource = "network"; STORE.liveErr = "";
           saveCache(); renderQuoteRibbon();
-          if (STORE.state) { patchHeroKpis(); patchMainlinesLive(); renderSessionRotation(); }
+          if (STORE.state) { patchHeroKpis(); patchMainlinesLive(); patchSetupsLive(); renderSessionRotation(); patchCandidatesLive(); }
         } catch (e) {
           STORE.liveErr = "行情同步失败";
           renderQuoteRibbon();
@@ -1927,11 +2013,11 @@
       setInterval(() => {
         if (document.hidden) return;
         fetchLive(false);
-      }, 60000);
+      }, 30000);
       setInterval(() => {
         if (document.hidden) return;
         fetchState(false);
-      }, 180000);
+      }, 60000);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) refreshAll(false);
       });
