@@ -171,7 +171,8 @@
     .blue-txt { font-size: 12px; font-weight: 600; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; }
 
     .drawer-row { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(30,35,32,.06); }
-    details.quiet { font-size: 12px; color: var(--muted); flex: 1 1 260px; }
+    details.quiet { font-size: 12px; color: var(--muted); }
+    .drawer-row > details.quiet { flex: 1 1 260px; }
     details.quiet summary { cursor: pointer; font-weight: 600; color: var(--muted); user-select: none; }
     details.quiet summary:hover { color: var(--ink); }
     details.quiet[open] summary { color: var(--ink); margin-bottom: 8px; }
