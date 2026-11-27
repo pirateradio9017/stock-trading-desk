@@ -842,39 +842,23 @@
     }
 
     /* News Tab */
-    .news-list {
-      display: grid;
-      gap: 10px;
-    }
-
-    .news-item {
-      background: var(--paper-soft);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px;
-    }
-
-    .news-meta {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      font-size: 11.5px;
-      color: var(--ink-muted);
-      margin-bottom: 5px;
-    }
+    .news-list { border-top: 1px solid var(--border); }
 
     .news-title {
-      margin: 0 0 5px;
-      font-size: 14.5px;
-      font-weight: 700;
+      display: block;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border);
+      font-size: .95rem;
+      line-height: 1.5;
       color: var(--ink);
+      overflow-wrap: anywhere;
+      text-decoration: none;
     }
 
-    .news-summary {
-      margin: 0 0 6px;
-      font-size: 12.5px;
-      color: var(--ink-muted);
+    a.news-title:hover, a.news-title:focus-visible {
+      background: var(--paper-soft);
+      text-decoration: underline;
+      text-underline-offset: 3px;
     }
 
     .empty-box {
@@ -2336,7 +2320,7 @@
           listEl.innerHTML = `<div class="empty-box">正在同步多源中文电报...</div>`;
           return;
         }
-        const items = Array.isArray(STORE.news.items) ? STORE.news.items : [];
+        const items = Array.isArray(STORE.news.items) ? STORE.news.items.slice(0, 10) : [];
         metaBar.textContent = `更新时间：${STORE.news.updatedAt || "--"} · 共 ${items.length} 条去重快讯`;
         if (items.length === 0) {
           listEl.innerHTML = `<div class="empty-box">当前暂未获取到有效中文快讯，请稍后点击刷新重试。</div>`;
@@ -2344,18 +2328,10 @@
         }
         listEl.innerHTML = items.map((item) => {
           const link = safeHttpUrl(item.link);
-          return `
-            <article class="news-item">
-              <div class="news-meta">
-                <span class="badge tone-sage">${escapeHtml(item.tag)}</span>
-                <span class="badge tone-slate">${escapeHtml(item.source)}</span>
-                <span>${escapeHtml(item.pubDate)}</span>
-              </div>
-              <h3 class="news-title">${escapeHtml(item.title)}</h3>
-              <p class="news-summary">${escapeHtml(item.summary)}</p>
-              ${link ? `<a class="src-link" style="font-size:12px;" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a>` : ""}
-            </article>
-          `;
+          const title = escapeHtml(item.title);
+          return link
+            ? `<a class="news-title" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+            : `<span class="news-title">${title}</span>`;
         }).join("");
       }
 
