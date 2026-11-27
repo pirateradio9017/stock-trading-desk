@@ -33,13 +33,6 @@
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
-    body.green-up {
-      --up: #2E6F54;
-      --up-bg: rgba(46, 111, 84, 0.11);
-      --down: #B83A2E;
-      --down-bg: rgba(184, 58, 46, 0.11);
-    }
-
     * {
       box-sizing: border-box;
     }
@@ -74,9 +67,17 @@
     .masthead-top {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       gap: 12px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+    }
+
+    .masthead-top h1 {
+      min-width: 0;
+    }
+
+    .masthead-top .btn {
+      flex-shrink: 0;
     }
 
     .kicker {
@@ -920,7 +921,7 @@
         gap: 7px;
       }
       .masthead { padding: 14px; margin-bottom: 8px; }
-      .masthead .toolbar .btn { min-height: 44px; }
+      .masthead-top .btn { min-height: 36px; padding: 6px 14px; }
       .sync-pill { flex-basis: 100%; }
       .tab-nav {
         position: sticky;
@@ -963,18 +964,15 @@
   <div class="desk-shell">
     <header class="masthead">
       <div class="masthead-top">
-        <div>
-          <h1>美股交易链条观察</h1>
-          <p class="subtitle">主线传导、估值与回撤、资金轮动和跨资产验证</p>
-        </div>
+        <h1>美股交易链条观察</h1>
+        <button type="button" class="btn" id="btnRefreshAll">立即刷新</button>
       </div>
+      <p class="subtitle">主线传导、估值与回撤、资金轮动和跨资产验证</p>
       <div class="toolbar">
         <span class="sync-pill" id="liveSyncPill" role="status">
           <span class="sync-dot" id="liveSyncDot"></span>
           <span id="liveTimeText">自动实时同步中...</span>
         </span>
-        <button type="button" class="btn" id="btnColorMode">红涨绿跌</button>
-        <button type="button" class="btn" id="btnRefreshAll">立即刷新</button>
       </div>
     </header>
 
@@ -1123,7 +1121,6 @@
         mainlineFilter: "",
         setupCategory: "all",
         historyExpanded: false,
-        greenUp: false,
         live: null,
         state: null,
         stateError: "",
@@ -1185,23 +1182,19 @@
       }
 
       function getUpColor() {
-        return STORE.greenUp ? "#2E6F54" : "#B83A2E";
+        return "#B83A2E";
       }
 
       function getDownColor() {
-        return STORE.greenUp ? "#B83A2E" : "#2E6F54";
+        return "#2E6F54";
       }
 
       function getUpBgRgb(alpha) {
-        return STORE.greenUp
-          ? "rgba(46, 111, 84, " + alpha + ")"
-          : "rgba(184, 58, 46, " + alpha + ")";
+        return "rgba(184, 58, 46, " + alpha + ")";
       }
 
       function getDownBgRgb(alpha) {
-        return STORE.greenUp
-          ? "rgba(184, 58, 46, " + alpha + ")"
-          : "rgba(46, 111, 84, " + alpha + ")";
+        return "rgba(46, 111, 84, " + alpha + ")";
       }
 
       function fmtChg(chg) {
@@ -2771,20 +2764,6 @@
         ensureTabCharts(tabName);
       }
 
-      function togglePolarity() {
-        STORE.greenUp = !STORE.greenUp;
-        document.body.classList.toggle("green-up", STORE.greenUp);
-        const btn = document.getElementById("btnColorMode");
-        if (btn) {
-          btn.textContent = STORE.greenUp ? "绿涨红跌" : "红涨绿跌";
-        }
-        if (STORE.state) {
-          renderLinkage();
-          dirtyCharts.chains = true;
-          ensureTabCharts(STORE.activeTab);
-        }
-      }
-
       const BOOT_CACHE_KEY = "desk-boot-cache-v1";
       const BOOT_CACHE_VERSION = 1;
       const BOOT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -3083,9 +3062,6 @@
         STORE.historyExpanded = !STORE.historyExpanded;
         renderCandidates();
       };
-
-      const colorBtn = document.getElementById("btnColorMode");
-      if (colorBtn) colorBtn.addEventListener("click", togglePolarity);
 
       const refreshBtn = document.getElementById("btnRefreshAll");
       if (refreshBtn) refreshBtn.addEventListener("click", () => fetchAll(true));
