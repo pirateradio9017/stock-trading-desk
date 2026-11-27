@@ -5,3 +5,6 @@ compatibility_date = "2024-11-01"
 [[kv_namespaces]]
 binding = "DESK_STATE"
 id = "abc99f1cc4ae4314a085daa5d0006076"
+
+[triggers]
+crons = ["*/5 * * * *"]

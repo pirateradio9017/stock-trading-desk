@@ -28,8 +28,8 @@
       --down-bg: rgba(46, 111, 84, 0.11);
       --shadow: 0 2px 10px rgba(31, 29, 26, 0.04);
       --radius: 12px;
-      --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --font-serif: "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
+      --font-sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-serif: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
@@ -46,6 +46,11 @@
       font-size: 16px;
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
+    }
+
+    .copy-tag {
+      font-weight: 700;
+      color: var(--ink);
     }
 
     .desk-shell {
@@ -281,15 +286,26 @@
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
+      gap: 6px 8px;
+      margin-bottom: 10px;
+    }
+
+    .hero-meta-row .badge {
+      white-space: normal;
+      text-align: left;
+      line-height: 1.35;
     }
 
     .hero-headline {
-      margin: 0 0 8px;
-      font-family: var(--font-serif);
-      font-size: 20px;
-      line-height: 1.35;
+      margin: 0 0 10px;
+      font-family: var(--font-sans);
+      font-size: clamp(18px, 2.2vw, 21px);
+      font-weight: 700;
+      line-height: 1.48;
+      letter-spacing: -0.01em;
+      font-variant-numeric: tabular-nums;
+      text-wrap: pretty;
+      overflow-wrap: break-word;
       color: var(--ink);
     }
 
@@ -297,14 +313,16 @@
       margin: 0 0 10px;
       color: var(--ink);
       font-size: 13.5px;
+      line-height: 1.68;
     }
 
     .hero-gate {
       font-size: 12.5px;
+      line-height: 1.62;
       color: var(--ink-muted);
       background: var(--paper-soft);
       border-left: 3px solid var(--ochre);
-      padding: 8px 10px;
+      padding: 9px 11px;
       border-radius: 6px;
       margin-bottom: 12px;
     }
@@ -322,6 +340,10 @@
       border-radius: 10px;
       padding: 10px 12px;
       min-width: 0;
+    }
+
+    .kpi-top {
+      display: block;
     }
 
     .kpi-label {
@@ -347,10 +369,10 @@
     }
 
     .kpi-sub {
-      margin-top: 4px;
-      font-size: 11.5px;
+      margin-top: 5px;
+      font-size: 12px;
       color: var(--ink-muted);
-      line-height: 1.4;
+      line-height: 1.55;
       word-break: break-word;
     }
 
@@ -418,12 +440,13 @@
     }
     .chart-legend button[aria-pressed="false"] { opacity: .65; text-decoration: line-through; }
     .rotation-bars { display: grid; gap: 5px; }
-    .rotation-group { display: grid; grid-template-columns: 2.4rem minmax(0,1fr); gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding: 4px 0; }
-    .rotation-bar { display: grid; grid-template-columns: minmax(0,1fr) 4.5rem; gap: 8px; align-items: center; font: .8rem var(--font-mono); }
+    .rotation-group { display: grid; grid-template-columns: 2.4rem minmax(0,1fr); gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding: 5px 0; }
+    .rotation-group > div { display: grid; gap: 3px; }
+    .rotation-bar { display: grid; grid-template-columns: minmax(0,1fr) 4.7rem; gap: 8px; align-items: center; font: .8rem var(--font-mono); }
     .rotation-fill.period-20 { opacity: .45; }
     .rotation-period { display: inline-block; width: 12px; height: 8px; margin-right: 5px; background: var(--ink-muted); border-radius: 2px; }
     .rotation-period.period-20 { opacity: .45; }
-    .rotation-bar strong { text-align: right; }
+    .rotation-bar strong { text-align: right; padding: 1px 4px; border-radius: 4px; }
     .rotation-track { display: block; position: relative; height: 12px; background: var(--paper-card); border-radius: 4px; }
     .rotation-track::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid var(--border-strong); }
     .rotation-fill { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
@@ -458,7 +481,9 @@
     .research-audit { margin-top: 12px; color: var(--ink-muted); }
     .research-audit summary, .trend-details summary { cursor: pointer; font-weight: 650; }
     .research-audit p { margin: 8px 0 0; font-size: .9rem; }
-    .market-brief-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: .94rem; }
+    .market-brief-text { white-space: normal; overflow-wrap: anywhere; line-height: 1.72; font-size: 13.5px; }
+    .brief-item { margin: 0; }
+    .brief-item + .brief-item { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
     .trend-details { margin-top: 14px; }
     .trend-details summary { font-size: .88rem; color: var(--ink-muted); }
     .ranking-list { display: grid; gap: 7px; }
@@ -684,14 +709,26 @@
 
     .ml-copy {
       font-size: 13px;
+      line-height: 1.65;
       color: var(--ink);
       margin: 8px 0 0;
       display: grid;
-      gap: 6px;
+      gap: 8px;
     }
 
     .ml-copy p {
       margin: 0;
+    }
+
+    .ml-copy-section {
+      display: grid;
+      gap: 4px;
+    }
+
+    .ml-copy-sub {
+      margin: 0;
+      padding-left: 9px;
+      border-left: 2px solid var(--border);
     }
 
     .ml-foot {
@@ -941,16 +978,21 @@
         white-space: normal;
       }
       .ed-card { padding: 12px; }
-      .kpi-grid { gap: 6px; }
-      .kpi-card { padding: 7px; }
-      .kpi-val { font-size: .95rem; overflow-wrap: anywhere; }
-      .kpi-val-row { gap: 3px; }
+      .hero-headline { font-size: 17px; line-height: 1.5; }
+      .kpi-grid { grid-template-columns: 1fr; gap: 8px; }
+      .kpi-card { padding: 10px 12px; }
+      .kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .kpi-label { margin-bottom: 0; font-size: 12px; }
+      .kpi-val-row { gap: 6px; align-items: center; flex-wrap: nowrap; }
+      .kpi-val { font-size: 16px; overflow-wrap: anywhere; }
+      .kpi-sub { margin-top: 6px; font-size: 12px; line-height: 1.55; }
       .filter-btn, .chart-legend .btn, #setupChartLinks .btn, .radar-dimensions button, #radarReplay, #toggleHistory {
         min-height: 44px;
       }
       .tab-panel, #setupHeading, .setup-card, [data-macro-id] { scroll-margin-top: 68px; }
       .spark-box { width: clamp(58px, 20vw, 88px); height: 40px; }
-      table.corr-table { min-width: 430px; }
+      table.corr-table { min-width: 0; font-size: 11px; }
+      table.corr-table th, table.corr-table td { padding: 6px 2px; }
       table.corr-table th:first-child {
         position: sticky;
         left: 0;
@@ -1154,6 +1196,41 @@
           .replace(/'/g, "&#39;");
       }
 
+      function normalizeCjkSpacing(val) {
+        if (val === null || val === undefined) return "";
+        return String(val)
+          .replace(/[ \t]+([、，。；：！？）】」])/g, "$1")
+          .replace(/([、，。；：！？（【「])[ \t]+/g, "$1")
+          .replace(/([\u4e00-\u9fff])([A-Za-z0-9$€£¥^]|[+-](?=\d))/g, "$1 $2")
+          .replace(/([A-Za-z0-9%])([\u4e00-\u9fff])/g, "$1 $2");
+      }
+
+      function formatDisplayHtml(val, { protectMetrics = false } = {}) {
+        let text = normalizeCjkSpacing(val);
+        if (protectMetrics) {
+          text = text
+            .replace(/\b(\d+[DWMY])[ ]+([+-]?\d[\d.,]*%?)(?![A-Za-z])/g, "$1\u00A0$2")
+            .replace(/\b(\^?[A-Z]{2,6}(?:=[A-Z])?)[ ]+([+-]?\d[\d.,]*%?)(?![A-Za-z])/g, "$1\u00A0$2")
+            .replace(/\b(\^?[A-Z]{2,6}(?:=[A-Z])?)[ ]+(\d+[DWMY]\u00A0[+-]?\d[\d.,]*%?)/g, "$1\u00A0$2");
+        }
+        return escapeHtml(text);
+      }
+
+      function formatBriefHtml(val) {
+        const blocks = String(val || "")
+          .trim()
+          .split(/\n{2,}/)
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (!blocks.length) return "";
+        return blocks.map((block) => {
+          let html = formatDisplayHtml(block);
+          html = html.replace(/^([①②③④⑤⑥⑦⑧⑨⑩][^：]{2,48}：)/, '<span class="copy-tag">$1</span>');
+          html = html.replace(/(传导假设：|下一验证：|待核验：)/g, '<span class="copy-tag">$1</span>');
+          return `<p class="brief-item">${html}</p>`;
+        }).join("");
+      }
+
       function safeHttpUrl(url) {
         if (typeof url !== "string") return "";
         const trimmed = url.trim();
@@ -1255,8 +1332,22 @@
       }
 
       function researchParagraphs(value) {
-        return String(value || "").split(/(?=【[^】]+】)/).filter(Boolean)
-          .map(part => `<p>${escapeHtml(part)}</p>`).join("");
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        const parts = raw
+          .split(/(?=【[^】]+】)|(?<=[。！？；\n])\s*(?=(?:新增事实|较上期变化|传导假设|反证|验证|失效|不确定性|证据缺口)：)/)
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (parts.length <= 1) {
+          return `<p>${formatDisplayHtml(raw).replace(/^((?:【[^】]+】|(?:新增事实|较上期变化|传导假设|反证|验证|失效|不确定性|证据缺口)：))/, '<span class="copy-tag">$1</span>')}</p>`;
+        }
+        return parts.map((part) => {
+          const html = formatDisplayHtml(part).replace(
+            /^((?:【[^】]+】|(?:新增事实|较上期变化|传导假设|反证|验证|失效|不确定性|证据缺口)：))/,
+            '<span class="copy-tag">$1</span>'
+          );
+          return `<p class="ml-copy-sub">${html}</p>`;
+        }).join("");
       }
 
       function canvasFrame(id) {
@@ -1597,7 +1688,7 @@
               if (Math.hypot(other.px - cx, other.py - cy) < r + 2.5) penalty += 500;
             }
             for (const lb of placed) {
-              if (c.bx < lb.bx + lb.bw + 4 && c.bx + bw + 4 > lb.bx && Math.abs(c.by - lb.by) < bh + 2) penalty += 400;
+              if (c.bx < lb.bx + lb.bw + 10 && c.bx + bw + 10 > lb.bx && Math.abs(c.by - lb.by) < bh + 6) penalty += 450;
             }
             if (penalty < bestPenalty) {
               bestPenalty = penalty;
@@ -1689,13 +1780,23 @@
 
         if (hasState) {
           const researchTime = STORE.state.serverSyncedAt || "";
-          parts.push("研究生成 " + (researchTime || "未知"));
+          const researchMs = parseCnTimestampMs(researchTime);
+          let ageTag = "";
+          if (Number.isFinite(researchMs)) {
+            const ageMin = Math.max(0, Math.round((Date.now() - researchMs) / 60000));
+            if (ageMin < 60) {
+              ageTag = `（${ageMin} 分钟前）`;
+            } else {
+              const hrs = (ageMin / 60).toFixed(1).replace(/\.0$/, "");
+              ageTag = `（约 ${hrs} 小时前）`;
+            }
+          }
+          parts.push("研究生成 " + (researchTime || "未知") + ageTag);
           if (!anyBusy) {
-            const researchMs = parseCnTimestampMs(researchTime);
             const closedSession = STORE.live && (STORE.live.marketSession === "HOLIDAY" || STORE.live.marketSession === "OFF_HOURS");
-            const staleLimitMs = (closedSession ? 5 : 3) * 60 * 60 * 1000;
+            const staleLimitMs = (closedSession ? 2.5 : 1.5) * 60 * 60 * 1000;
             if (!Number.isFinite(researchMs) || Date.now() - researchMs > staleLimitMs) {
-              parts.push("研究更新延迟，请检查后台任务");
+              parts.push("研究更新延迟");
               dot.classList.remove("busy", "cached");
               dot.classList.add("err");
             }
@@ -1801,12 +1902,14 @@
           const cls = q ? chgClass(q.chg) : "chg-flat";
           return `
             <div class="kpi-card" data-kpi="${escapeHtml(k.sym)}">
-              <div class="kpi-label">${escapeHtml(k.label)}</div>
-              <div class="kpi-val-row">
-                <span class="kpi-val">${escapeHtml(valStr)}</span>
-                <span class="badge ${cls}">${escapeHtml(chgStr)}</span>
+              <div class="kpi-top">
+                <div class="kpi-label">${escapeHtml(k.label)}</div>
+                <div class="kpi-val-row">
+                  <span class="kpi-val">${escapeHtml(valStr)}</span>
+                  <span class="badge ${cls}">${escapeHtml(chgStr)}</span>
+                </div>
               </div>
-              <div class="kpi-sub">${escapeHtml(k.note)}</div>
+              <div class="kpi-sub">${formatDisplayHtml(k.note)}</div>
             </div>
           `;
         }).join("");
@@ -1816,20 +1919,20 @@
         const briefOpen = briefEl ? briefEl.open : true;
         el.innerHTML = `
           <div class="hero-meta-row">
-            <span class="badge tone-sage">${escapeHtml(meta.badge || "主线研判")}</span>
-            ${meta.regime ? `<span class="badge tone-slate">${escapeHtml(meta.regime)}</span>` : ""}
-            ${meta.stance ? `<span class="badge tone-ochre">${escapeHtml(meta.stance)}</span>` : ""}
+            <span class="badge tone-sage">${formatDisplayHtml(meta.badge || "主线研判")}</span>
+            ${meta.regime ? `<span class="badge tone-slate">${formatDisplayHtml(meta.regime)}</span>` : ""}
+            ${meta.stance ? `<span class="badge tone-ochre">${formatDisplayHtml(meta.stance)}</span>` : ""}
             <span style="font-size:12px;color:var(--ink-muted);">${escapeHtml(meta.updated_at || "")}</span>
           </div>
-          <h2 class="hero-headline">${escapeHtml(meta.headline || "")}</h2>
-          <p class="hero-guide">${escapeHtml(meta.plain_guide || "")}</p>
-          <div class="hero-gate"><strong>下一验证关口：</strong>${escapeHtml(meta.next_gate || "")}</div>
+          <h2 class="hero-headline">${formatDisplayHtml(meta.headline || "", { protectMetrics: true })}</h2>
+          <p class="hero-guide">${formatDisplayHtml(meta.plain_guide || "")}</p>
+          <div class="hero-gate"><strong>下一验证关口：</strong>${formatDisplayHtml(meta.next_gate || "")}</div>
           <div class="kpi-grid">${kpiHtml}</div>
           ${meta.self_review || meta.stance ? `<details class="research-audit"${auditOpen ? " open" : ""}><summary>总控姿态与六维自审</summary>
-            ${meta.stance ? `<p><strong>当前姿态：</strong>${escapeHtml(meta.stance)}</p>` : ""}
-            ${meta.self_review ? `<p><strong>六维自审：</strong>${escapeHtml(meta.self_review)}</p>` : ""}
+            ${meta.stance ? `<p><strong>当前姿态：</strong>${formatDisplayHtml(meta.stance)}</p>` : ""}
+            ${meta.self_review ? `<p><strong>六维自审：</strong>${formatDisplayHtml(meta.self_review)}</p>` : ""}
           </details>` : ""}
-          ${meta.market_brief ? `<details class="ed-soft market-brief-box" style="margin:14px 0 0"${briefOpen ? " open" : ""}><summary>跨市场增量快报</summary><div class="market-brief-text">${escapeHtml(meta.market_brief)}</div></details>` : ""}
+          ${meta.market_brief ? `<details class="ed-soft market-brief-box" style="margin:14px 0 0"${briefOpen ? " open" : ""}><summary>跨市场增量快报</summary><div class="market-brief-text">${formatBriefHtml(meta.market_brief)}</div></details>` : ""}
         `;
       }
 
@@ -2042,11 +2145,11 @@
         const fields = [["传导假设", "hypothesis"], ["确认条件", "confirmation"],
           ["失效条件", "invalidation"], ["证据缺口", "uncertainty"]];
         const conditions = fields.filter(([, key]) => reasoning?.[key]).map(([label, key]) =>
-          `<p><strong>${label}</strong> ${escapeHtml(reasoning[key])}</p>`).join("");
+          `<p><strong>${label}</strong> ${formatDisplayHtml(reasoning[key])}</p>`).join("");
         const evidence = (reasoning?.evidence || []).map(item => {
           const url = safeHttpUrl(item.source_url);
           const label = escapeHtml([item.source, item.as_of].filter(Boolean).join(" · "));
-          return `<li>${escapeHtml(item.text)} ${url ? `<a class="src-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label}</li>`;
+          return `<li>${formatDisplayHtml(item.text)} ${url ? `<a class="src-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label}</li>`;
         }).join("");
         const rotation = review ? `<p><strong>锚点复核</strong> ${escapeHtml(review.candidate_symbol)} 已相对 ${escapeHtml(review.anchor_symbol)} 连续领先 ${escapeHtml(review.lead_sessions)} 个样本日。日期 ${escapeHtml(review.as_of)}。</p>` : "";
         return `<div class="evidence-block"><h4>证据与验证</h4>${evidence ? `<ul>${evidence}</ul>` : ""}${conditions}${rotation}</div>`;
@@ -2067,7 +2170,7 @@
             .map((s) => s.trim())
             .filter(Boolean);
           const chainHtml = steps
-            .map((st, sIdx) => `${sIdx > 0 ? '<span class="chain-arrow">→</span>' : ""}<span class="chain-step">${escapeHtml(st)}</span>`)
+            .map((st, sIdx) => `${sIdx > 0 ? '<span class="chain-arrow">→</span>' : ""}<span class="chain-step">${formatDisplayHtml(st)}</span>`)
             .join("");
 
           const pairs = parseStockPairs(m.stocks);
@@ -2099,8 +2202,8 @@
                     <span class="badge tone-slate">Score ${escapeHtml(m.score)}</span>
                     <span style="font-size:11.5px;color:var(--ink-muted);">首次发现 ${escapeHtml(m.first_seen)}</span>
                   </div>
-                  <h3 class="ml-title"><button type="button" class="ml-select" data-mainline-filter="${escapeHtml(m.id)}" aria-controls="setupRadar" aria-pressed="${STORE.mainlineFilter === m.id}">${escapeHtml(m.title)}</button></h3>
-                  <div class="ml-status">${escapeHtml(m.status)}</div>
+                  <h3 class="ml-title"><button type="button" class="ml-select" data-mainline-filter="${escapeHtml(m.id)}" aria-controls="setupRadar" aria-pressed="${STORE.mainlineFilter === m.id}">${formatDisplayHtml(m.title)}</button></h3>
+                  <div class="ml-status">${formatDisplayHtml(m.status)}</div>
                 </div>
                 <div class="spark-box">
                   <canvas id="ml-spark-${idx}"></canvas>
@@ -2112,9 +2215,9 @@
               ${buildRulerHtml(m, qm)}
 
               <div class="ml-copy">
-                <p><strong>白话翻译：</strong>${escapeHtml(m.plain)}</p>
-                <div><strong>研究拆解：</strong>${researchParagraphs(m.summary)}</div>
-                <div><strong>验证计划：</strong>${researchParagraphs(m.watch_points)}</div>
+                <p><strong>白话翻译：</strong>${formatDisplayHtml(m.plain)}</p>
+                <div class="ml-copy-section"><strong>研究拆解：</strong>${researchParagraphs(m.summary)}</div>
+                <div class="ml-copy-section"><strong>验证计划：</strong>${researchParagraphs(m.watch_points)}</div>
               </div>
 
               ${renderReasoning(m)}
@@ -2258,10 +2361,10 @@
               <div style="font-size:12px;color:var(--ink-muted);">
                 代表标的：${escapeHtml(c.stocks || "--")}
               </div>
-              <div style="font-size:12.5px;color:var(--ink);">${escapeHtml(c.plain)}</div>
-              <div style="font-size:12px;color:var(--ink-muted);"><strong>晋级规则：</strong>${escapeHtml(c.rule)}</div>
+              <div style="font-size:12.5px;color:var(--ink);">${formatDisplayHtml(c.plain)}</div>
+              <div style="font-size:12px;color:var(--ink-muted);"><strong>晋级规则：</strong>${formatDisplayHtml(c.rule)}</div>
               <div style="font-size:11.5px;color:var(--ink-faint);">
-                首次发现 ${escapeHtml(c.first_seen)} · 滞留 ${escapeHtml(c.stale_days ?? 0)} 天 · ${escapeHtml(c.history_log || "")}
+                首次发现 ${escapeHtml(c.first_seen)} · 滞留 ${escapeHtml(c.stale_days ?? 0)} 天 · ${formatDisplayHtml(c.history_log || "")}
               </div>
             </article>
           `).join("");
@@ -2384,8 +2487,8 @@
               <strong style="font-size:14px;">${escapeHtml(item.pair)}</strong>
               <span class="badge ${getToneClass(item.tone)}">${escapeHtml(item.corr)}</span>
             </div>
-            <p style="margin:0 0 6px;font-size:12.5px;color:var(--ink);">${escapeHtml(item.why)}</p>
-            <p style="margin:0;font-size:12px;color:var(--ink-muted);"><strong>信号触发：</strong>${escapeHtml(item.signal)}</p>
+            <p style="margin:0 0 6px;font-size:12.5px;line-height:1.6;color:var(--ink);">${formatDisplayHtml(item.why)}</p>
+            <p style="margin:0;font-size:12px;line-height:1.58;color:var(--ink-muted);"><strong>信号触发：</strong>${formatDisplayHtml(item.signal)}</p>
           </article>
         `).join("");
       }
@@ -2448,7 +2551,7 @@
               <div class="score-track">
                 <div class="score-fill" style="width: ${clamped}%; background-color: ${fillBg};"></div>
               </div>
-              ${m.feature ? `<div style="font-size:12px;color:var(--ink-muted);margin-bottom:4px;"><strong>当下特征：</strong>${escapeHtml(m.feature)}</div>` : ""}
+              ${m.feature ? `<div style="font-size:12px;line-height:1.55;color:var(--ink-muted);margin-bottom:4px;"><strong>当下特征：</strong>${formatDisplayHtml(m.feature)}</div>` : ""}
               <div class="macro-metrics">
                 <div class="macro-metric-box">
                   <div style="color:var(--ink-muted);font-size:11px;">${escapeHtml(m.m1_label || "代理指标 1")}</div>
@@ -2461,8 +2564,8 @@
                   <div style="color:var(--ink-faint);font-size:11px;">${escapeHtml(m.m2_date || "")} ${escapeHtml(m.m2_sub || "")}</div>
                 </div>
               </div>
-              <div style="font-size:12.5px;color:var(--ink);margin-top:4px;"><strong>白话解读：</strong>${escapeHtml(m.plain)}</div>
-              <div style="font-size:12.5px;color:var(--terra);margin-top:3px;"><strong>核心隐忧：</strong>${escapeHtml(m.concern)}</div>
+              <div style="font-size:12.5px;line-height:1.6;color:var(--ink);margin-top:4px;"><strong>白话解读：</strong>${formatDisplayHtml(m.plain)}</div>
+              <div style="font-size:12.5px;line-height:1.6;color:var(--terra);margin-top:3px;"><strong>核心隐忧：</strong>${formatDisplayHtml(m.concern)}</div>
               ${srcUrl ? `<div style="margin-top:6px;font-size:12px;"><a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">一级验证来源 ↗</a></div>` : ""}
             </article>
           `;

@@ -19,6 +19,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 DEFAULT_WORKER_NAME = "stock-trading-desk"
 DEFAULT_KV_NAMESPACE_ID = "abc99f1cc4ae4314a085daa5d0006076"
+DEFAULT_CRON_SCHEDULES: tuple[str, ...] = ("*/5 * * * *",)
 
 
 def sync_spa_module() -> Path:
@@ -54,6 +55,7 @@ def deploy_worker_rest(
     metadata = {
         "main_module": "index.js",
         "compatibility_date": "2024-11-01",
+        "keep_bindings": ["secret_text"],
         "bindings": [
             {
                 "type": "kv_namespace",
@@ -88,6 +90,15 @@ def deploy_worker_rest(
         if sub_resp.status_code >= 400:
             raise RuntimeError(f"Subdomain enable failed ({sub_resp.status_code}): {sub_resp.text[:300]}")
 
+        sched_payload = [{"cron": expr} for expr in DEFAULT_CRON_SCHEDULES]
+        sched_resp = client.put(
+            f"{base}/workers/scripts/{worker_name}/schedules",
+            headers={**headers, "Content-Type": "application/json"},
+            json=sched_payload,
+        )
+        if sched_resp.status_code >= 400 or not sched_resp.json().get("success", False):
+            raise RuntimeError(f"Worker schedules update failed ({sched_resp.status_code}): {sched_resp.text[:300]}")
+
         kv_pushed: list[str] = []
         if publish_data:
             for key, fname in (("state", "state.json"), ("live", "live.json"), ("news", "news.json")):
@@ -107,6 +118,7 @@ def deploy_worker_rest(
         "worker": worker_name,
         "kv_namespace_id": kv_namespace_id,
         "kv_pushed": kv_pushed,
+        "schedules": list(DEFAULT_CRON_SCHEDULES),
         "worker_etag": upload_json.get("result", {}).get("etag", ""),
         "url": f"https://{worker_name}.pirateradio9017.workers.dev",
     }

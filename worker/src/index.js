@@ -7,7 +7,8 @@ const WORKER_CONFIG = {
   YAHOO_TIMEOUT_MS: 3500,
   WSCN_TIMEOUT_MS: 4000,
   YAHOO_CONCURRENCY: 8,
-  LIVE_REFRESH_BUDGET_MS: 6500,
+  LIVE_REFRESH_BUDGET_MS: 8500,
+  LIVE_CRON_BUDGET_MS: 20_000,
   LIVE_FRESH_ACTIVE_MS: 60_000,
   LIVE_FRESH_IDLE_MS: CACHE_TTL_MS,
   LIVE_SWR_MAX_AGE_MS: 15 * 60_000,
@@ -20,8 +21,19 @@ const WORKER_CONFIG = {
   NEWS_FORCE_WAIT_MS: 4500,
   NEWS_EDGE_MAX_SEC: 180,
   STATE_FRESH_MS: 30_000,
-  STATE_EDGE_MAX_SEC: 300,
+  STATE_EDGE_MAX_SEC: 60,
   FALLBACK_COOLDOWN_SEC: 15,
+  CRON_LIVE_ACTIVE_MS: 10 * 60_000,
+  CRON_LIVE_IDLE_MS: 15 * 60_000,
+  CRON_NEWS_ACTIVE_MS: 15 * 60_000,
+  CRON_NEWS_IDLE_MS: 20 * 60_000,
+  RESEARCH_ACTIVE_MAX_AGE_MS: 55 * 60_000,
+  RESEARCH_IDLE_MAX_AGE_MS: 115 * 60_000,
+  DISPATCH_COOLDOWN_MS: 25 * 60_000,
+  DISPATCH_TIMEOUT_MS: 8000,
+  GITHUB_REPO: "pirateradio9017/stock-trading-desk",
+  GITHUB_WORKFLOW: "pipeline.yml",
+  GITHUB_REF: "main",
 };
 
 const LIVE_SYMBOLS = [
@@ -64,6 +76,13 @@ const LIVE_SYMBOLS = [
   ["GLD", "黄金 ETF"],
   ["TSM", "台积电"],
   ["LMT", "洛克希德·马丁"],
+  ["^N225", "日经225"],
+  ["^KS11", "韩国 KOSPI"],
+  ["^TWII", "台湾加权"],
+  ["^HSI", "恒生指数"],
+  ["000001.SS", "上证指数"],
+  ["^GDAXI", "德国 DAX"],
+  ["^STOXX50E", "欧洲斯托克50"],
 ];
 
 // Ribbon, hero KPI, and primary anchor tickers run in the first fetch waves.
@@ -650,7 +669,7 @@ function buildPriorityFetchOrder() {
 
 const LIVE_FETCH_ORDER = buildPriorityFetchOrder();
 
-async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = false) {
+async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = false, budgetMsOverride = null) {
   let cached = cachedSeed || null;
   if (checkKvFirst) {
     const kvLatest = await safeKvJson(env, "live");
@@ -675,7 +694,10 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     }
   }
 
-  const deadlineMs = Date.now() + WORKER_CONFIG.LIVE_REFRESH_BUDGET_MS;
+  const budgetMs = Number.isFinite(budgetMsOverride) && budgetMsOverride > 0
+    ? budgetMsOverride
+    : WORKER_CONFIG.LIVE_REFRESH_BUDGET_MS;
+  const deadlineMs = Date.now() + budgetMs;
   const fetchedInOrder = await mapWithConcurrency(
     LIVE_FETCH_ORDER,
     WORKER_CONFIG.YAHOO_CONCURRENCY,
@@ -1090,7 +1112,192 @@ async function resolveState(env, ctx, force, requestUrl) {
   };
 }
 
+const EARLY_CLOSE_ET_DATES = new Set([
+  "2026-11-27",
+  "2026-12-24",
+  "2027-11-26",
+  "2028-7-3",
+  "2028-11-24",
+]);
+
+const REBALANCE_HISTORY_TYPES = new Set(["晋升主线", "降级淘汰", "主线复盘"]);
+
+function isPostCloseRebalanceDue(stateObj, now = new Date()) {
+  const et = getEtParts(now);
+  if (et.weekday === "Sat" || et.weekday === "Sun") return { due: false, forceRebalance: false };
+  if (isNyseHolidayEt(et.year, et.month, et.day)) return { due: false, forceRebalance: false };
+  const closeMin = EARLY_CLOSE_ET_DATES.has(`${et.year}-${et.month}-${et.day}`) ? 13 * 60 : 16 * 60;
+  const nowMin = et.hour * 60 + et.minute;
+  if (nowMin < closeMin + 30 || nowMin >= closeMin + 150) {
+    return { due: false, forceRebalance: false };
+  }
+  const history = Array.isArray(stateObj?.history) ? stateObj.history : [];
+  const etTodayKey = `${et.year}-${et.month}-${et.day}`;
+  for (const entry of history) {
+    if (!entry || !REBALANCE_HISTORY_TYPES.has(entry.type)) continue;
+    const m = String(entry.time || "").match(/^(\d{4})[-/](\d{2})[-/](\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (!m) continue;
+    const utcMs = Date.UTC(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4]) - 8,
+      Number(m[5]),
+      Number(m[6] || 0)
+    );
+    const entryEt = getEtParts(new Date(utcMs));
+    const entryKey = `${entryEt.year}-${entryEt.month}-${entryEt.day}`;
+    const entryMin = entryEt.hour * 60 + entryEt.minute;
+    if (entryKey === etTodayKey && entryMin >= closeMin + 30) {
+      return { due: false, forceRebalance: false };
+    }
+  }
+  return { due: true, forceRebalance: nowMin >= closeMin + 60 };
+}
+
+function evaluateResearchDispatch(stateObj, dispatchMeta, now = new Date()) {
+  const nowMs = now.getTime();
+  const stateAgeMs = parseCnTimestampAgeMs(stateObj?.serverSyncedAt, nowMs);
+  const stateAgeMin = stateAgeMs !== null && stateAgeMs >= 0 ? Math.round(stateAgeMs / 60_000) : null;
+
+  const lastTs = dispatchMeta?.lastDispatchedAt ? Date.parse(dispatchMeta.lastDispatchedAt) : NaN;
+  if (Number.isFinite(lastTs) && nowMs - lastTs >= 0 && nowMs - lastTs < WORKER_CONFIG.DISPATCH_COOLDOWN_MS) {
+    return { shouldDispatch: false, reason: "cooldown", forceRebalance: false, stateAgeMin };
+  }
+
+  const rebal = isPostCloseRebalanceDue(stateObj, now);
+  if (rebal.due) {
+    return {
+      shouldDispatch: true,
+      reason: rebal.forceRebalance ? "post_close_rebalance_catchup" : "post_close_rebalance",
+      forceRebalance: rebal.forceRebalance,
+      stateAgeMin,
+    };
+  }
+
+  const active = isActiveMarketSession(now);
+  const maxAgeMs = active ? WORKER_CONFIG.RESEARCH_ACTIVE_MAX_AGE_MS : WORKER_CONFIG.RESEARCH_IDLE_MAX_AGE_MS;
+  if (stateAgeMs === null || stateAgeMs < 0 || stateAgeMs >= maxAgeMs) {
+    return {
+      shouldDispatch: true,
+      reason: active ? "active_hourly_due" : "idle_2h_due",
+      forceRebalance: false,
+      stateAgeMin,
+    };
+  }
+  return { shouldDispatch: false, reason: "fresh", forceRebalance: false, stateAgeMin };
+}
+
+async function maybeDispatchResearchWorkflow(env, ctx, now = new Date()) {
+  const [stateObj, dispatchMeta] = await Promise.all([
+    safeKvJson(env, "state"),
+    safeKvJson(env, "dispatch_meta"),
+  ]);
+  const decision = evaluateResearchDispatch(stateObj, dispatchMeta, now);
+  const token = String(env?.GH_DISPATCH_TOKEN || "").trim();
+  if (!decision.shouldDispatch) {
+    return { dispatched: false, configured: Boolean(token), ...decision };
+  }
+  if (!token) {
+    return { dispatched: false, configured: false, reason: "missing_token", ...decision, pendingReason: decision.reason };
+  }
+
+  const repo = String(env?.GH_DISPATCH_REPO || WORKER_CONFIG.GITHUB_REPO).trim();
+  const workflow = String(env?.GH_DISPATCH_WORKFLOW || WORKER_CONFIG.GITHUB_WORKFLOW).trim();
+  const ref = String(env?.GH_DISPATCH_REF || WORKER_CONFIG.GITHUB_REF).trim();
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`;
+  const nowIso = formatUtcIso(now);
+
+  let statusCode = 0;
+  let ok = false;
+  try {
+    const signal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(WORKER_CONFIG.DISPATCH_TIMEOUT_MS)
+      : undefined;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "StockTradingDesk-Worker/2.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        ref,
+        inputs: {
+          deploy_worker: "false",
+          force_rebalance: decision.forceRebalance ? "true" : "false",
+        },
+      }),
+      signal,
+    });
+    statusCode = resp ? resp.status : 0;
+    ok = Boolean(resp && (resp.ok || resp.status === 204));
+  } catch (_) {
+    statusCode = 0;
+    ok = false;
+  }
+
+  const nextMeta = {
+    lastDispatchedAt: nowIso,
+    lastStatus: ok ? "dispatched" : `error_${statusCode || "network"}`,
+    lastHttpStatus: statusCode,
+    reason: decision.reason,
+    stateAgeMin: decision.stateAgeMin,
+  };
+  safeKvPut(env, "dispatch_meta", nextMeta, ctx);
+  return { dispatched: ok, configured: true, statusCode, ...decision };
+}
+
+async function runScheduledMaintenance(env, ctx, now = new Date()) {
+  const active = isActiveMarketSession(now);
+  const liveMaxAgeMs = active ? WORKER_CONFIG.CRON_LIVE_ACTIVE_MS : WORKER_CONFIG.CRON_LIVE_IDLE_MS;
+  const newsMaxAgeMs = active ? WORKER_CONFIG.CRON_NEWS_ACTIVE_MS : WORKER_CONFIG.CRON_NEWS_IDLE_MS;
+  const [cachedLive, cachedNews] = await Promise.all([
+    safeKvJson(env, "live"),
+    safeKvJson(env, "news"),
+  ]);
+
+  const tasks = [];
+  const liveAge = isValidLivePayload(cachedLive) ? parseCnTimestampAgeMs(cachedLive.updatedAt, now.getTime()) : null;
+  const newsAge = isValidNewsPayload(cachedNews) ? parseCnTimestampAgeMs(cachedNews.updatedAt, now.getTime()) : null;
+  let refreshedLive = false;
+  let refreshedNews = false;
+
+  if (liveAge === null || liveAge < 0 || liveAge >= liveMaxAgeMs) {
+    refreshedLive = true;
+    tasks.push(
+      fetchAndStoreLive(env, ctx, null, cachedLive, false, WORKER_CONFIG.LIVE_CRON_BUDGET_MS).catch(() => null)
+    );
+  }
+  if (newsAge === null || newsAge < 0 || newsAge >= newsMaxAgeMs) {
+    refreshedNews = true;
+    tasks.push(
+      fetchAndStoreNews(env, ctx, null, cachedNews, false).catch(() => null)
+    );
+  }
+  const dispatchPromise = maybeDispatchResearchWorkflow(env, ctx, now).catch((err) => ({
+    dispatched: false,
+    reason: `error:${err?.name || "unknown"}`,
+  }));
+  tasks.push(dispatchPromise);
+
+  await Promise.allSettled(tasks);
+  const dispatch = await dispatchPromise;
+  return { refreshedLive, refreshedNews, dispatch };
+}
+
 export default {
+  async scheduled(event, env, ctx) {
+    const now = event && Number.isFinite(event.scheduledTime) ? new Date(event.scheduledTime) : new Date();
+    const task = runScheduledMaintenance(env, ctx, now);
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(task);
+    }
+    return task;
+  },
+
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
@@ -1135,7 +1342,7 @@ export default {
         const force = isForce(url);
 
         if (path === "/api/health") {
-          const [stateRes, liveHit, newsHit] = await Promise.all([
+          const [stateRes, liveHit, newsHit, dispatchMeta] = await Promise.all([
             resolveState(env, ctx, force, request.url),
             force
               ? resolveLive(env, ctx, true, request.url).then((r) => r.payload)
@@ -1145,16 +1352,19 @@ export default {
               ? resolveNews(env, ctx, true, request.url).then((r) => r.payload)
               : getCachedPayload(buildCacheKey(request.url, "/api/news"), "news")
                   .then((h) => (h && h.data ? h.data : safeKvJson(env, "news"))),
+            safeKvJson(env, "dispatch_meta"),
           ]);
           const stateObj = stateRes.payload;
           const live = liveHit || (await getLivePayload(env, ctx, false));
           const news = newsHit || (await getNewsPayload(env, ctx, false));
           let stateUpdatedAt = null;
+          let stateAgeMinutes = null;
           if (stateObj && stateObj.serverSyncedAt) {
             const m = String(stateObj.serverSyncedAt).match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
             if (m) {
               const dt = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 8, Number(m[5]), Number(m[6])));
               stateUpdatedAt = formatUtcIso(dt);
+              stateAgeMinutes = Math.max(0, Math.round((Date.now() - dt.getTime()) / 60_000));
             }
           }
           return jsonResponse(
@@ -1163,8 +1373,13 @@ export default {
               version: APP_VERSION,
               serverTimeUtc: formatUtcIso(new Date()),
               stateUpdatedAt,
+              stateAgeMinutes,
+              liveUpdatedAt: live ? live.updatedAt || null : null,
               newsCount: news ? news.count : 0,
               quotesCount: live ? live.count : 0,
+              cronDispatchConfigured: Boolean(String(env?.GH_DISPATCH_TOKEN || "").trim()),
+              lastDispatchAt: dispatchMeta?.lastDispatchedAt || null,
+              lastDispatchStatus: dispatchMeta?.lastStatus || null,
             },
             { status: 200, cacheControl: "no-store", request }
           );

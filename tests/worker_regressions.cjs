@@ -534,8 +534,84 @@ process.on('beforeExit', () => {
   process.off('unhandledRejection', onUnhandled);
   assert.equal(unhandledCount, 0, 'raceWithDeadline must never emit unhandledRejection');
 
+  // 10. Scheduled maintenance: APAC/EU live coverage, KV warm throttle, research auto-dispatch cadence & cooldown
+  assert.ok(edgeSymbols.includes('^N225') && edgeSymbols.includes('^HSI') && edgeSymbols.includes('^GDAXI'));
+
+  // Active US intraday (2026-11-25 15:00 UTC = 10:00 ET): 60m old state triggers hourly dispatch
+  const activeNow = new Date('2026-11-25T15:00:00Z');
+  const staleActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 60 * 60_000)), history: [] };
+  const freshActiveState = { serverSyncedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 20 * 60_000)), history: [] };
+  assert.equal(ctx.evaluateResearchDispatch(staleActiveState, null, activeNow).shouldDispatch, true);
+  assert.equal(ctx.evaluateResearchDispatch(staleActiveState, null, activeNow).reason, 'active_hourly_due');
+  assert.equal(ctx.evaluateResearchDispatch(freshActiveState, null, activeNow).shouldDispatch, false);
+  // Cooldown prevents duplicate dispatch
+  assert.equal(
+    ctx.evaluateResearchDispatch(staleActiveState, { lastDispatchedAt: new Date(activeNow.getTime() - 10 * 60_000).toISOString() }, activeNow).reason,
+    'cooldown'
+  );
+  // Post-close rebalance on early-close day 2026-11-27 13:35 ET (18:35 UTC) triggers rebalance even if state is 25m old
+  const earlyCloseRebalNow = new Date('2026-11-27T18:35:00Z');
+  const recentPreCloseState = {
+    serverSyncedAt: ctx.formatCnTimestamp(new Date(earlyCloseRebalNow.getTime() - 25 * 60_000)),
+    history: [{ time: '2026-11-28 01:55 UTC+8', type: '防抖锁定' }],
+  };
+  const rebalDecision = ctx.evaluateResearchDispatch(recentPreCloseState, null, earlyCloseRebalNow);
+  assert.equal(rebalDecision.shouldDispatch, true);
+  assert.equal(rebalDecision.reason, 'post_close_rebalance');
+  assert.equal(rebalDecision.forceRebalance, false);
+  // Already rebalanced after 13:30 ET skips duplicate rebalance
+  const doneRebalState = {
+    serverSyncedAt: ctx.formatCnTimestamp(new Date(earlyCloseRebalNow.getTime() - 5 * 60_000)),
+    history: [{ time: '2026-11-28 02:32 UTC+8', type: '主线复盘' }],
+  };
+  assert.equal(ctx.evaluateResearchDispatch(doneRebalState, null, earlyCloseRebalNow).shouldDispatch, false);
+
+  // Full worker.scheduled() execution: refreshes stale live/news and dispatches GitHub workflow when token configured
+  ctx.resetWorkerCaches();
+  mockCache.store.clear();
+  const schedKv = new Map([
+    ['state', staleActiveState],
+    ['live', makeLiveSnapshot(30 * 60_000, 120)],
+    ['news', { updatedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 30 * 60_000)), count: 1, items: [{ event_id: 'old', title: '美股旧新闻测试条目', summary: 'old', tag: '美股快讯', source: '华尔街见闻', pubDate: '2026-11-25 22:00 UTC+8', link: 'https://example.com/old' }] }],
+  ]);
+  const dispatchCalls = [];
+  ctx.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('api.github.com')) {
+      dispatchCalls.push({ url: u, method: opts.method, body: JSON.parse(opts.body) });
+      return { ok: true, status: 204 };
+    }
+    if (u.includes('yahoo.com')) return makeYahooResponse(444);
+    return {
+      ok: true,
+      json: async () => ({
+        data: { items: [{ id: 888, title: '标普盘中走强测试快讯', uri: 'https://example.com/s1', display_time: Math.floor(Date.now() / 1000) - 30 }] },
+      }),
+    };
+  };
+  const schedBg = [];
+  const schedEnv = {
+    GH_DISPATCH_TOKEN: 'test-token-only',
+    DESK_STATE: {
+      get: async (k) => schedKv.get(k) || null,
+      put: async (k, v) => schedKv.set(k, JSON.parse(v)),
+    },
+  };
+  const schedResult = await ctx.worker.scheduled(
+    { scheduledTime: activeNow.getTime(), cron: '*/5 * * * *' },
+    schedEnv,
+    { waitUntil: (p) => schedBg.push(p) }
+  );
+  await Promise.all(schedBg);
+  assert.equal(schedResult.refreshedLive, true);
+  assert.equal(schedResult.refreshedNews, true);
+  assert.equal(schedResult.dispatch.dispatched, true);
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].body.inputs.deploy_worker, 'false');
+  assert.equal(schedKv.get('dispatch_meta').lastStatus, 'dispatched');
+
   testsCompleted = true;
-  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health)');
+  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance & GitHub dispatch)');
 })().catch((e) => {
   testsCompleted = true;
   console.error(e);
