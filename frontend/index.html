@@ -422,10 +422,10 @@
     .corr-scale { font-size:.875rem; color:var(--muted); }
     #setupCategories {
       flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-      padding-bottom: 2px; max-width: 100%;
+      gap: 6px; padding-bottom: 2px; max-width: 100%;
     }
     #setupCategories::-webkit-scrollbar { display: none; }
-    #setupCategories .f-btn { flex: 0 0 auto; white-space: nowrap; }
+    #setupCategories .f-btn { flex: 0 0 auto; white-space: nowrap; padding: 5px 9px; font-size: 11.5px; }
     .plot-key {
       display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 10px;
     }
@@ -1196,7 +1196,7 @@
           b.classList.toggle("active", cat === STORE.setupCategory);
         });
         document.getElementById("setupCoverage").textContent = allRows.length
-          ? `${ml ? ml.id + " " + ml.title : "全部主线"} · ${visible.length} 个观察标的 · 越靠右下代表回撤越深且估值越低`
+          ? `${ml ? ml.id + " " + ml.title : "全部主线"} · ${visible.length} 个标的 · 右下角为深跌低估`
           : "等待估值与回撤数据同步";
 
         const pts = visible.flatMap((row, idx) => {
