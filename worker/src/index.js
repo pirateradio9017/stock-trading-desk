@@ -378,26 +378,34 @@ function countChineseChars(s) {
   return m ? m.length : 0;
 }
 
-const US_RELEVANCE_RE = /(美股|纳指|标普|道指|华尔街|美联储|联储|鲍威尔|美债|美元|日元|黄金|白银|原油|布伦特|wti|英伟达|nvidia|nvda|苹果|微软|谷歌|亚马逊|meta|特斯拉|博通|amd|台积电|asml|光模块|半导体|芯片|算力|ai|比特币|btc|加密|coinbase|mstr|关税|通胀|cpi|pce|非农|pmi|gdp|降息|加息|高盛|摩根|sec|财报|并购|科技股)/i;
+const US_RELEVANCE_RE = /(美股|纳指|标普|道指|华尔街|美联储|联储|鲍威尔|欧央行|日央行|植田|东京|美债|美元|日元|黄金|白银|原油|布伦特|英伟达|苹果|微软|谷歌|亚马逊|特斯拉|博通|台积电|洛克希德|光模块|半导体|芯片|算力|比特币|加密|关税|通胀|非农|降息|加息|高盛|摩根|财报|并购|科技股|军工|(?<![a-z0-9])(wti|opec|fed|fomc|ecb|boj|nvidia|nvda|meta|avgo|amd|tsm|asml|lmt|ai|btc|coinbase|mstr|cpi|pce|pmi|gdp|sec)(?![a-z0-9]))/i;
+const BOILERPLATE_TITLE_RE = /(^提醒[：:]\s*日内请重点关注|^华尔街见闻早餐|网络视听.*版权|行业自律公约|沪指|深成指|创业板指|北证50|两市成交额|A股三大股指|板块午后|涨停潮)/i;
+const GLOBAL_OVERRIDE_RE = /(美股|纳指|标普|美联储|英伟达|台积电|苹果|特斯拉|比特币|原油|黄金|欧央行|日央行|东京|CPI|PCE|FOMC|OPEC)/i;
 
 function classifyNewsTag(text) {
   const t = String(text || "");
-  if (/英伟达|nvidia|nvda|博通|avgo|amd|芯片|半导体|算力|gpu|ai|台积电|asml|光模块|lumentum/i.test(t)) return "M1 算力";
-  if (/电力|核电|电网|能源|原油|布伦特|wti|opec|数据中心|iren|nebius|coreweave|公用事业/i.test(t)) return "电力基建";
-  if (/美联储|fed|fomc|鲍威尔|降息|加息|通胀|cpi|pce|非农|美债|收益率|黄金|白银|日元|美元/i.test(t)) return "宏观利率";
-  if (/比特币|bitcoin|btc|以太坊|加密|crypto|coinbase|strategy|mstr/i.test(t)) return "加密联动";
-  if (/sec|8-k|425|反垄断|关税|制裁|出口管制|并购|裁决/i.test(t)) return "并购监管";
-  if (/日经|日本|韩国|欧洲|英国|中国|港股|恒生|a股|亚太/i.test(t)) return "全市场宏观";
+  if (/(比特币|以太坊|加密|(?<![a-z0-9])(bitcoin|btc|crypto|coinbase|mstr)(?![a-z0-9]))/i.test(t)) return "加密联动";
+  if (/(英伟达|博通|芯片|半导体|算力|台积电|光模块|(?<![a-z0-9])(nvidia|nvda|avgo|amd|gpu|ai|openai|tsm|asml|lumentum|hbm)(?![a-z0-9]))/i.test(t)) return "M1 算力";
+  if (/(原油|布伦特|炼油|裂解价差|霍尔木兹|天然气|黄金|白银|铜矿|铜价|大宗商品|(?<![a-z0-9])(wti|opec)(?![a-z0-9]))/i.test(t)) return "能源大宗";
+  if (/(电力|核电|电网|数据中心|公用事业|燃气轮机|变电|(?<![a-z0-9])(iren|nebius|coreweave)(?![a-z0-9]))/i.test(t)) return "电力基建";
+  if (/(美联储|鲍威尔|欧央行|日央行|植田|降息|加息|通胀|非农|美债|国债收益率|收益率|日元|美元指数|按揭利率|(?<![a-z0-9])(fed|fomc|ecb|boj|cpi|pce)(?![a-z0-9]))/i.test(t)) return "宏观利率";
+  if (/(反垄断|关税|制裁|出口管制|并购|裁决|听证会|军工|国防|(?<![a-z0-9])(sec|8-k|425)(?![a-z0-9]))/i.test(t)) return "并购监管";
+  if (/(日经|日本|东京|韩国|欧洲|欧元区|德国|英国|港股|恒生|亚太|新兴市场)/i.test(t)) return "全市场宏观";
   return "美股快讯";
 }
 
-function isRelevantToUsDesk(tag, text) {
+function isBoilerplateNoise(title) {
+  return BOILERPLATE_TITLE_RE.test(title) && !GLOBAL_OVERRIDE_RE.test(title);
+}
+
+function isRelevantToUsDesk(tag, title, text) {
+  if (isBoilerplateNoise(title)) return false;
   if (tag !== "美股快讯") return true;
   return US_RELEVANCE_RE.test(String(text || ""));
 }
 
-async function fetchWscnChannel(channel) {
-  const url = `https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=${channel}&limit=25`;
+async function fetchWscnChannel(channel, limit = 30) {
+  const url = `https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=${channel}&limit=${limit}`;
   try {
     const resp = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" },
@@ -417,8 +425,8 @@ async function getNewsPayload(env, ctx, force) {
   }
 
   const [usItems, globalItems] = await Promise.all([
-    fetchWscnChannel("us-stock-channel"),
-    fetchWscnChannel("global-channel"),
+    fetchWscnChannel("us-stock-channel", 40),
+    fetchWscnChannel("global-channel", 30),
   ]);
 
   const seen = new Set();
@@ -445,30 +453,43 @@ async function getNewsPayload(env, ctx, force) {
     seen.add(key);
 
     const tsSec = Number(raw.display_time);
-    const publishedAt = tsSec > 1_000_000_000 && tsSec * 1000 <= Date.now()
+    const validTs = Number.isFinite(tsSec) && tsSec > 1_000_000_000 && tsSec * 1000 <= Date.now();
+    const publishedAt = validTs
       ? formatCnNewsDate(new Date(tsSec * 1000))
       : "发布时间未提供";
     const tag = classifyNewsTag(`${title} ${summary}`);
-    const sumClean = summary && summary !== title ? summary.slice(0, 140) : `对应 ${tag} 市场动态追踪。`;
+    const sumClean = summary && summary !== title
+      ? (summary.length > 180 ? `${summary.slice(0, 179).replace(/[，,、；;：:\s]+$/, "")}…` : summary)
+      : `对应 ${tag} 市场动态追踪。`;
     const eventId = `wscn-${raw.id || seen.size}`;
 
-    const item = {
-      event_id: String(eventId),
-      title,
-      summary: sumClean,
-      tag,
-      source: "华尔街见闻",
-      pubDate: publishedAt,
-      link,
+    const entry = {
+      sortTs: validTs ? tsSec : 0,
+      item: {
+        event_id: String(eventId),
+        title,
+        summary: sumClean,
+        tag,
+        source: "华尔街见闻",
+        pubDate: publishedAt,
+        link,
+      },
     };
-    if (isRelevantToUsDesk(tag, `${title} ${summary}`)) {
-      relevant.push(item);
-    } else {
-      backfill.push(item);
+    if (isRelevantToUsDesk(tag, title, `${title} ${summary}`)) {
+      relevant.push(entry);
+    } else if (!isBoilerplateNoise(title)) {
+      backfill.push(entry);
     }
   }
 
-  const items = [...relevant, ...backfill].slice(0, 25);
+  relevant.sort((a, b) => b.sortTs - a.sortTs);
+  backfill.sort((a, b) => b.sortTs - a.sortTs);
+  const picked = relevant.slice(0, 25);
+  if (picked.length < 10) {
+    picked.push(...backfill.slice(0, 10 - picked.length));
+  }
+  picked.sort((a, b) => b.sortTs - a.sortTs);
+  const items = picked.map((entry) => entry.item);
 
   if (items.length === 0 && cached && Array.isArray(cached.items) && cached.items.length > 0) {
     return cached;

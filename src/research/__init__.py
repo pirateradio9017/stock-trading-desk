@@ -81,19 +81,33 @@ async def run_research_cycle(
         bundle.market,
         history_note=synthesis.history_note,
     )
+    evolved = evolved.model_copy(
+        update={
+            "setups": build_setups(evolved.mainlines, bundle.market),
+            "anchor_reviews": build_anchor_reviews(evolved.mainlines, bundle.market, governance),
+        }
+    )
 
     audited_state, audit_report = audit_and_repair_state(
         evolved,
         bundle,
         engine_mode=synthesis.engine_mode,
         model_used=synthesis.model_used,
+        prev_state=prev_state,
     )
 
     if not audit_report.passed:
         raise ValueError("Research audit rejected publication: " + audit_report.summary)
 
-    audited_state.setups = build_setups(audited_state.mainlines, bundle.market)
-    audited_state.anchor_reviews = build_anchor_reviews(audited_state.mainlines, bundle.market, governance)
+    # Re-validate after recomputing setups/anchor_reviews if audit adjusted mainlines.
+    audited_state = StateResponse.model_validate(
+        audited_state.model_copy(
+            update={
+                "setups": build_setups(audited_state.mainlines, bundle.market),
+                "anchor_reviews": build_anchor_reviews(audited_state.mainlines, bundle.market, governance),
+            }
+        ).model_dump(mode="json")
+    )
 
     saved: Path | None = None
     if persist:

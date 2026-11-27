@@ -219,3 +219,121 @@ def test_deepseek_failure_is_bounded_and_keeps_old_research(monkeypatch, tmp_pat
         asyncio.run(run_research_cycle(b, state_path=path))
     assert len(calls) == 3
     assert path.read_bytes() == before
+
+
+def test_pairwise_corr_not_collapsed_by_single_shifted_symbol():
+    from src.ingestion.market_data import SymbolSeries, _build_corr_matrix
+    b, _ = sample()
+    sm = dict(b.market.series_map)
+    btc = sm['BTC-USD']
+    sm['BTC-USD'] = SymbolSeries(spec=btc.spec, dates=btc.dates[:10], closes=btc.closes[:10], quote=btc.quote)
+    for eq in ('SPY', 'QQQ', 'TLT', 'GLD', 'NVDA'):
+        es = sm[eq]
+        sm[eq] = SymbolSeries(spec=es.spec, dates=es.dates[5:], closes=es.closes[5:], quote=es.quote)
+    mat = _build_corr_matrix(sm)
+    # SPY-QQQ share >20 aligned dates and should not be collapsed to 0.0 by BTC-USD's short window.
+    assert mat[0][1] != 0.0
+    assert mat[0][1] == mat[1][0]
+
+
+def test_news_word_boundaries_priority_backfill_and_ordering():
+    from datetime import timedelta
+    from src.ingestion.news_aggregator import RawWireItem, _classify_tag, build_chinese_news_response
+    assert _classify_tag('智利铜矿工会Copper Workers Federation呼吁恢复铜冶炼') == '能源大宗'
+    assert _classify_tag('法国Caisse基础设施部门暂停发债') != 'M1 算力'
+    assert _classify_tag('比特币升破6万美元关口') == '加密联动'
+    now = datetime(2026, 11, 27, 4, 0, tzinfo=timezone.utc)
+    rel = [
+        RawWireItem(f'r{i}', f'美股英伟达财报跟踪测试标题{i}', '摘要内容足够长', 'M1 算力', '华尔街见闻', 'L1_WIRE_ZH', 'zh',
+                    now - timedelta(minutes=i * 5), f'2026-11-27 11:{55 - i:02d} UTC+8', f'https://wallstreetcn.com/r{i}', 100)
+        for i in range(12)
+    ]
+    noise = [
+        RawWireItem(f'n{i}', f'本地公园赏秋摄影活动通知{i}', '社区公园活动介绍', '美股快讯', '华尔街见闻', 'L1_WIRE_ZH', 'zh',
+                    now - timedelta(minutes=i), f'2026-11-27 11:5{i} UTC+8', f'https://wallstreetcn.com/n{i}', 100)
+        for i in range(5)
+    ]
+    resp = build_chinese_news_response(noise + rel, now, limit=25)
+    assert resp.count == 12
+    assert all('公园赏秋' not in item.title for item in resp.items)
+    dates = [item.pubDate for item in resp.items]
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_early_close_calendar_and_fred_macro_formatting():
+    from src.ingestion.primary_sources import build_macro_proxies
+    b, _ = sample()
+    thx = datetime(2026, 11, 26, 15, 0, tzinfo=timezone.utc)
+    cal = build_holiday_safe_calendar(thx, [])
+    assert any('半日市' in e.title and '13:00 ET' in e.time for e in cal)
+    assert any('FOMC' in e.title for e in cal)
+    macros = build_macro_proxies(b.market, thx, fred_metrics={
+        'BAMLH0A0HYM2': ('2026-11-24', 3.72),
+        'BAMLH0A0HYM2EY': ('2026-11-24', 8.44),
+        'MORTGAGE30US': ('2026-11-25', 7.21),
+    })
+    credit = next(m for m in macros if m.chain_id == 'credit')
+    assert credit.m1_label == 'FRED 高收益债 OAS'
+    assert credit.m1_val == '3.72%'
+    assert '8.44%' in credit.m1_sub
+    for m in macros:
+        assert not m.m1_val.endswith('$') and not m.m2_val.endswith('$')
+
+
+def test_locked_window_preserves_reasoning_updates_action_and_idempotent_audit():
+    from datetime import timedelta
+    from src.research.state_machine import evolve_state
+    b, s = sample()
+    dt_lock = datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc)
+    dec = evaluate_governance_window(dt_lock)
+    prev_m0 = s.mainlines[0].model_copy(update={
+        'action': '顺势核心跟踪', 'action_tone': 'sage',
+        'source_url': 'https://wallstreetcn.com/livenews/expired-old-123',
+    })
+    prev_c0 = s.candidates[0].model_copy(update={
+        'tier': 'demote', 'tier_label': '弱化/淘汰',
+        'history_log': '初始化建档，因能源电力基建抗跌性强纳入升级候选',
+    })
+    prev = s.model_copy(update={
+        'mainlines': [prev_m0] + list(s.mainlines[1:]),
+        'candidates': [prev_c0] + list(s.candidates[1:]),
+    })
+    # Same-anchor update refreshes action/action_tone; mismatched anchor preserves reasoning.
+    draft_same = s.model_copy(update={
+        'mainlines': [s.mainlines[0].model_copy(update={'action': '控仓等企稳', 'action_tone': 'terra'})] + list(s.mainlines[1:])
+    })
+    ev_same = evolve_state(draft_same, prev, dec, dt_lock + timedelta(hours=2), b.market)
+    assert ev_same.mainlines[0].action == '控仓等企稳'
+    assert ev_same.mainlines[0].action_tone == 'terra'
+    assert '纳入升级候选' not in ev_same.candidates[0].history_log
+
+    draft_diff = s.model_copy(update={
+        'mainlines': [m.model_copy(update={'anchor_sym': 'AAPL'}) for m in s.mainlines]
+    })
+    cur = prev
+    for step in range(3):
+        ev = evolve_state(draft_diff, cur, dec, dt_lock + timedelta(hours=2 * (step + 1)), b.market)
+        assert ev.mainlines[0].reasoning is not None
+        cur, rep = audit_and_repair_state(ev, b, engine_mode='deepseek', model_used='deepseek-flash', prev_state=None)
+        assert rep.passed
+        assert cur.mainlines[0].summary.count('【原引用未匹配本轮采集') <= 1
+
+
+def test_asml_included_in_setups_and_dim6_tolerates_two_missing_scissor_series():
+    from src.config import SymbolSpec
+    from src.ingestion.market_data import SymbolSeries
+    from src.research.setups import _security_series, build_setups
+    b, s = sample()
+    asml_old = b.market.series_map['ASML']
+    b.market.series_map['ASML'] = SymbolSeries(
+        spec=SymbolSpec('ASML', '阿斯麦', 'equity_semi', region='EU'),
+        dates=asml_old.dates, closes=asml_old.closes, quote=asml_old.quote, high_52w=1450.0,
+    )
+    assert _security_series(b.market, 'ASML') is not None
+    setups = build_setups(s.mainlines, b.market)
+    syms = {item.symbol for item in setups}
+    assert 'TSM' in syms or 'NVDA' in syms
+    trimmed_lt = s.analytics.linkageTrend.model_copy(update={'series': s.analytics.linkageTrend.series[:3]})
+    trimmed_state = s.model_copy(update={'analytics': s.analytics.model_copy(update={'linkageTrend': trimmed_lt})})
+    _, rep = audit_and_repair_state(trimmed_state, b, engine_mode='deepseek', model_used='deepseek-flash')
+    assert rep.passed

@@ -27,9 +27,24 @@ def _roster(mainline: MainlineItem) -> list[str]:
     return list(dict.fromkeys((mainline.anchor_sym.upper(), *pairs)))
 
 
+_US_TRADED_EQUITY_OVERRIDES = {"ASML"}
+_CORE_SETUP_FALLBACKS: tuple[tuple[str, str], ...] = (
+    ("TSM", "M1"),
+    ("AVGO", "M1"),
+    ("NVDA", "M1"),
+    ("ASML", "M1"),
+    ("LMT", "M5"),
+    ("XLE", "M5"),
+    ("ITB", "M2"),
+    ("TLT", "M2"),
+    ("CRWV", "M4"),
+    ("COIN", "M4"),
+)
+
+
 def _security_series(market: MarketSnapshot, symbol: str) -> SymbolSeries | None:
     series = market.series_map.get(symbol)
-    if series is None or series.spec.region != "US":
+    if series is None or (series.spec.region != "US" and series.spec.sym not in _US_TRADED_EQUITY_OVERRIDES):
         return None
     category = series.spec.category
     return series if category.startswith("equity_") or category.endswith("etf") else None
@@ -140,27 +155,53 @@ def _setup(series: SymbolSeries, mainline_id: str, market: MarketSnapshot) -> Re
 
 
 def build_setups(mainlines: list[MainlineItem], market: MarketSnapshot) -> list[ResearchSetup]:
-    """Cover each mainline before filling more rows from its same-theme roster."""
+    """Cover each mainline and high-signal core equities (e.g. TSM/LMT/ASML/AVGO) up to 10 rows."""
     rosters = [
         (line.id, [series for symbol in _roster(line) if (series := _security_series(market, symbol))])
         for line in mainlines
     ]
     ownership = {line.anchor_sym.upper(): line.id for line in reversed(mainlines)}
+    valid_mainline_ids = {line.id for line in mainlines}
     items: list[ResearchSetup] = []
     seen: set[str] = set()
-    for depth in range(3):
-        for mainline_id, roster in rosters:
-            if len(roster) <= depth:
-                continue
-            series = roster[depth]
+
+    # Pass 1: Cover the lead security from every mainline (M1..M5) first.
+    for mainline_id, roster in rosters:
+        if not roster:
+            continue
+        series = roster[0]
+        symbol = series.spec.sym
+        if symbol in seen or ownership.get(symbol, mainline_id) != mainline_id:
+            continue
+        items.append(_setup(series, mainline_id, market))
+        seen.add(symbol)
+        if len(items) == 10:
+            return items
+
+    # Pass 2: Prioritize high-signal single-name equities with valuation coverage (TSM/AVGO/ASML/LMT/etc.).
+    for symbol, default_ml in _CORE_SETUP_FALLBACKS:
+        if len(items) >= 10:
+            return items
+        if symbol in seen:
+            continue
+        series = _security_series(market, symbol)
+        if series is None:
+            continue
+        ml_id = ownership.get(symbol, default_ml if default_ml in valid_mainline_ids else (mainlines[0].id if mainlines else "M1"))
+        items.append(_setup(series, ml_id, market))
+        seen.add(symbol)
+
+    # Pass 3: Remaining mainline roster depth if slots remain.
+    for mainline_id, roster in rosters:
+        for series in roster[1:]:
+            if len(items) >= 10:
+                return items
             symbol = series.spec.sym
             if symbol in seen or ownership.get(symbol, mainline_id) != mainline_id:
                 continue
             items.append(_setup(series, mainline_id, market))
             seen.add(symbol)
-            if len(items) == 10:
-                return items
-    return items
+    return items[:10]
 
 
 def build_anchor_reviews(

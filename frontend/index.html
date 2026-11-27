@@ -834,6 +834,12 @@
     .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
     .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
     .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
+    .macro-card-active { border-color: var(--slate) !important; box-shadow: 0 0 0 2px rgba(79, 96, 112, 0.25); background: #f2f5f4; transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+    .market-brief-box summary { cursor: pointer; font-weight: 700; font-size: 16px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+    .market-brief-box summary::-webkit-details-marker { display: none; }
+    .market-brief-box summary::after { content: "收起 ▴"; font-size: 12px; font-weight: 500; color: var(--ink-muted); }
+    .market-brief-box:not([open]) summary::after { content: "展开 ▾"; }
+    .market-brief-box[open] .market-brief-text { margin-top: 8px; }
     .macro-metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1519,7 +1525,9 @@
         parts.push("研究生成 " + (researchTime || "未知"));
         const match = researchTime.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}) UTC\+8$/);
         const researchMs = match ? Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}+08:00`) : NaN;
-        if (!Number.isFinite(researchMs) || Date.now() - researchMs > 3 * 60 * 60 * 1000) {
+        const closedSession = STORE.live && (STORE.live.marketSession === "HOLIDAY" || STORE.live.marketSession === "OFF_HOURS");
+        const staleLimitMs = (closedSession ? 5 : 3) * 60 * 60 * 1000;
+        if (!Number.isFinite(researchMs) || Date.now() - researchMs > staleLimitMs) {
           parts.push("研究更新延迟，请检查后台任务");
           dot.classList.add("err");
         }
@@ -1536,7 +1544,11 @@
         const time = document.getElementById("quoteRibbonTime");
         const prices = quoteMap();
         time.textContent = STORE.live ? sessionLabelCn(STORE.live.marketSession) + " · 报价时间为美东" : "等待行情";
-        const symbols = [...new Set(["SPY", "QQQ", "^VIX", "^TNX", "BTC-USD", ...(STORE.state?.mainlines || []).map(row => row.anchor_sym)])];
+        const symbols = [...new Set([
+          "SPY", "QQQ", "^VIX", "^TNX", "BTC-USD",
+          ...(STORE.state?.mainlines || []).map(row => row.anchor_sym),
+          "TSM", "AVGO", "LMT", "XLE", "ITB", "ASML"
+        ])].slice(0, 12);
         const quotes = symbols.map(symbol => prices[symbol]).filter(item => item && finiteOrNull(item.price) !== null);
         el.innerHTML = quotes.length ? quotes.map(quote => {
           const ts = Date.parse(quote.tsUtc);
@@ -1579,6 +1591,8 @@
         }).join("");
 
         const auditOpen = el.querySelector(".research-audit")?.open;
+        const briefEl = el.querySelector(".market-brief-box");
+        const briefOpen = briefEl ? briefEl.open : true;
         el.innerHTML = `
           <div class="hero-meta-row">
             <span class="badge tone-sage">${escapeHtml(meta.badge || "主线研判")}</span>
@@ -1594,7 +1608,7 @@
             ${meta.stance ? `<p><strong>当前姿态：</strong>${escapeHtml(meta.stance)}</p>` : ""}
             ${meta.self_review ? `<p><strong>六维自审：</strong>${escapeHtml(meta.self_review)}</p>` : ""}
           </details>` : ""}
-          ${meta.market_brief ? `<section class="ed-soft" style="margin:14px 0 0"><h3 style="margin:0 0 8px;font-size:16px">跨市场增量快报</h3><div class="market-brief-text">${escapeHtml(meta.market_brief)}</div></section>` : ""}
+          ${meta.market_brief ? `<details class="ed-soft market-brief-box" style="margin:14px 0 0"${briefOpen ? " open" : ""}><summary>跨市场增量快报</summary><div class="market-brief-text">${escapeHtml(meta.market_brief)}</div></details>` : ""}
         `;
       }
 
@@ -1890,6 +1904,11 @@
           `;
         }).join("");
 
+        renderMainlineSparks();
+      }
+
+      function renderMainlineSparks() {
+        if (!STORE.state || !Array.isArray(STORE.state.mainlines)) return;
         STORE.state.mainlines.forEach((m, idx) => {
           const spark = Array.isArray(m.spark) ? m.spark : [];
           const first = spark.length ? Number(spark[0]) : 100;
@@ -2127,15 +2146,21 @@
         })), "linkageTrendLegend", "%", 0);
       }
 
-      function macroScoreColor(score) {
+      function macroScoreColor(score, wind) {
+        if (wind === "顺风") return "#2E6F54";
+        if (wind === "逆风") return "#B83A2E";
+        if (wind === "中性") return "#B67A27";
         if (score >= 60) return "#2E6F54";
-        if (score >= 35) return "#B67A27";
+        if (score >= 45) return "#B67A27";
         return "#B83A2E";
       }
 
-      function macroScoreTone(score) {
+      function macroScoreTone(score, wind) {
+        if (wind === "顺风") return "tone-sage";
+        if (wind === "逆风") return "tone-terra";
+        if (wind === "中性") return "tone-ochre";
         if (score >= 60) return "tone-sage";
-        if (score >= 35) return "tone-ochre";
+        if (score >= 45) return "tone-ochre";
         return "tone-terra";
       }
 
@@ -2153,14 +2178,14 @@
         const macro = Array.isArray(STORE.state.macro) ? STORE.state.macro : [];
         cardsEl.innerHTML = macro.map((m) => {
           const clamped = Math.max(0, Math.min(100, Number(m.score) || 0));
-          const fillBg = macroScoreColor(clamped);
+          const fillBg = macroScoreColor(clamped, m.wind);
           const srcUrl = safeHttpUrl(m.source_url);
           return `
-            <article class="ed-soft" data-macro-id="${escapeHtml(m.chain_id)}">
+            <article class="ed-soft${m.chain_id === radarSelected ? " macro-card-active" : ""}" data-macro-id="${escapeHtml(m.chain_id)}">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
                 <strong style="font-size:14.5px;">${escapeHtml(m.title)}</strong>
                 <div style="display:flex;gap:6px;align-items:center;">
-                  <span class="badge ${macroScoreTone(clamped)}">${escapeHtml(m.wind || m.state)} · ${escapeHtml(m.score)}/100</span>
+                  <span class="badge ${macroScoreTone(clamped, m.wind)}">${escapeHtml(m.wind || m.state)} · ${escapeHtml(m.score)}/100</span>
                   <span class="badge tone-slate">${escapeHtml(m.state)}</span>
                 </div>
               </div>
@@ -2228,6 +2253,7 @@
       function selectRadarDimension(id) {
         radarSelected = id;
         document.querySelectorAll('[data-radar-id]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.radarId === id)));
+        document.querySelectorAll('[data-macro-id]').forEach(el => el.classList.toggle('macro-card-active', el.dataset.macroId === id));
         const card = document.querySelector(`[data-macro-id="${id}"]`);
         if (card) {
           card.tabIndex = -1;
@@ -2294,7 +2320,13 @@
               const previous = row.data[(index + row.data.length - 1) % row.data.length];
               ctx[index && Number.isFinite(previous) ? "lineTo" : "moveTo"](...point(index, value * progress));
             });
-            if (complete) {ctx.closePath(); ctx.fill();}
+            if (complete) {
+              ctx.closePath();
+              ctx.fill();
+            } else if (row.data.length > 2 && Number.isFinite(row.data[0]) && Number.isFinite(row.data[row.data.length - 1])) {
+              ctx.moveTo(...point(row.data.length - 1, row.data[row.data.length - 1] * progress));
+              ctx.lineTo(...point(0, row.data[0] * progress));
+            }
             ctx.stroke();
             ctx.setLineDash([]);
             ctx.lineWidth = 1;
@@ -2323,7 +2355,14 @@
         const valid = rows.filter(r => r.score !== null);
         const strongest = [...valid].sort((a,b) => b.score-a.score)[0];
         const weakest = [...valid].sort((a,b) => a.score-b.score)[0];
-        document.getElementById('radarRegime').textContent = valid.length < 5 ? "部分数据待补充" : (strongest.score - weakest.score >= 25 ? "维度分化" : strongest.score < 40 ? "普遍承压" : weakest.score >= 60 ? "整体偏顺风" : "顺逆风交织");
+        const headwinds = valid.filter(r => r.m?.wind === "逆风").length;
+        const tailwinds = valid.filter(r => r.m?.wind === "顺风").length;
+        let regimeText = "顺逆风交织";
+        if (valid.length < 5) regimeText = "部分数据待补充";
+        else if (headwinds === 5 || strongest.score < 50) regimeText = "普遍承压";
+        else if (tailwinds === 5 || weakest.score >= 60) regimeText = "整体偏顺风";
+        else if (strongest.score - weakest.score >= 25) regimeText = "维度分化";
+        document.getElementById('radarRegime').textContent = regimeText;
         document.getElementById('radarTime').textContent = "研究快照：" + (timestamp || "等待数据");
         document.getElementById('radarComparison').textContent = radarPrevious ? "虚线为本浏览器上次观察（" + radarPrevious.time + "），并非固定上一交易日。" : "首次观察暂无对比；后续研究更新后，可与本浏览器上次观察比较。";
         document.getElementById('radarDimensions').innerHTML = rows.map(r => `<button type="button" data-radar-id="${r.id}" aria-pressed="${r.id === radarSelected}">${escapeHtml(r.label)} · ${r.score === null ? "待补充" : r.score}</button>`).join('');
@@ -2347,6 +2386,7 @@
 
       function renderChartsForTab(tabName) {
         if (tabName === "chains") {
+          renderMainlineSparks();
           renderMomentum();
           renderSetupRadar();
           if (document.getElementById("mainlineTrend").open) renderOverviewChart();

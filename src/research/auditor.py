@@ -155,12 +155,16 @@ def _sanitize_text(text: str, default: str) -> str:
     return s.strip() or default
 
 
+_UNVERIFIED_URL_PREFIX = "【原引用未匹配本轮采集，以下论述待核验；链接仅作查阅入口】"
+
+
 def audit_and_repair_state(
     state: StateResponse,
     bundle: IngestionBundle,
     *,
     engine_mode: str = "gemini",
     model_used: str = "",
+    prev_state: StateResponse | None = None,
 ) -> tuple[StateResponse, AuditReport]:
     """Run 6-dimension self-audit on StateResponse, auto-repairing recoverable defects."""
     checks: list[AuditCheck] = []
@@ -168,6 +172,12 @@ def audit_and_repair_state(
     warnings: list[str] = []
 
     verified_urls = _collect_verified_urls(bundle)
+    prior_verified_urls: set[str] = set()
+    if prev_state is not None:
+        for pm in prev_state.mainlines:
+            if _is_valid_http_url(pm.source_url) and not pm.source_url.startswith("https://finance.yahoo.com/quote/"):
+                prior_verified_urls.add(pm.source_url)
+    accepted_urls = verified_urls | prior_verified_urls
 
     # --- Dimension 1: Data Freshness & Coverage ---
     live_total = bundle.market.live.count
@@ -252,10 +262,11 @@ def audit_and_repair_state(
             ruler_repaired = True
             repairs.append(f"M{idx}: 修正无效 accel/flip 标尺")
 
-        # Source URL verification
-        if not _is_trusted_url(m.source_url, verified_urls):
+        # Source URL verification (accept current-cycle URLs and carried-over prior verified URLs; prefix idempotently)
+        if not _is_trusted_url(m.source_url, accepted_urls):
             updates["source_url"] = _fallback_url_for_anchor(m.anchor_sym, bundle)
-            updates["summary"] = "【原引用未匹配本轮采集，以下论述待核验；链接仅作查阅入口】" + m.summary
+            if not m.summary.startswith(_UNVERIFIED_URL_PREFIX):
+                updates["summary"] = _UNVERIFIED_URL_PREFIX + m.summary
             url_repaired = True
             repairs.append(f"M{idx}: 替换非白名单/无效信源 URL")
 
@@ -452,13 +463,16 @@ def audit_and_repair_state(
     )
 
     # --- Dimension 6: Quantitative Consistency ---
+    scissor_series_count = len(repaired_state.analytics.linkageTrend.series)
+    if scissor_series_count < 4:
+        warnings.append(f"30D 剪刀差有效序列仅 {scissor_series_count} 条（部分标的缺共同起始价已诚实跳过）")
     dim6_ok = (
         len(repaired_state.analytics.sparkLabels) == 11
         and len(repaired_state.analytics.corrLabels) == 6
         and len(repaired_state.analytics.corrMatrix) == 6
         and len(repaired_state.analytics.rotationAssets) >= 5
         and len(repaired_state.analytics.linkageTrend.labels) >= 5
-        and len(repaired_state.analytics.linkageTrend.series) >= 4
+        and scissor_series_count >= 2
     )
     checks.append(
         AuditCheck(

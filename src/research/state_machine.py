@@ -316,9 +316,23 @@ def _prev_state_et_date(prev_state: StateResponse) -> date | None:
         except ValueError:
             pass
     if prev_state.history:
-        m2 = re.match(r"^(\d{4})-(\d{2})-(\d{2})", prev_state.history[0].time)
+        m2 = re.match(
+            r"^(\d{4})[-/](\d{2})[-/](\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?",
+            prev_state.history[0].time,
+        )
         if m2:
             try:
+                if m2.group(4) is not None:
+                    dt_cn = datetime(
+                        int(m2.group(1)),
+                        int(m2.group(2)),
+                        int(m2.group(3)),
+                        int(m2.group(4)),
+                        int(m2.group(5) or 0),
+                        int(m2.group(6) or 0),
+                        tzinfo=TZ_CN,
+                    )
+                    return dt_cn.astimezone(TZ_ET).date()
                 return date(int(m2.group(1)), int(m2.group(2)), int(m2.group(3)))
             except ValueError:
                 pass
@@ -392,6 +406,9 @@ def evolve_state(
                 tier = "watch"
             tier_label, default_tone = _TIER_LABELS[tier]
             log_text = c.history_log.strip() or f"{et_today_iso} 初始纳入候补观察（5D {r5:+.2f}% / 20D {r20:+.2f}%）"
+            if tier != c.tier:
+                log_text = re.sub(r"纳入升级候选", "转入降级/防守观察", log_text)
+                log_text = f"{log_text} -> {et_today_iso}:量化规则调整为{tier_label}(5D {r5:+.1f}%/20D {r20:+.1f}%)"
             evolved_candidates.append(
                 c.model_copy(
                     update={
@@ -444,22 +461,26 @@ def evolve_state(
                 clamped_delta = max(-5, min(5, raw_delta))
                 new_score = int(max(10, min(98, prev_m.score + clamped_delta)))
                 same_anchor = matched.anchor_sym.upper() == prev_m.anchor_sym.upper()
+                new_action = matched.action if same_anchor else prev_m.action
+                new_action_tone = matched.action_tone if same_anchor else prev_m.action_tone
                 new_chain = matched.chain if same_anchor else prev_m.chain
                 new_plain = matched.plain if same_anchor else prev_m.plain
                 new_summary = matched.summary if same_anchor else prev_m.summary
                 new_watch = matched.watch_points if same_anchor else prev_m.watch_points
                 new_url = (matched.source_url or prev_m.source_url) if same_anchor else prev_m.source_url
-                new_reasoning = matched.reasoning if same_anchor else None
+                new_reasoning = (matched.reasoning or prev_m.reasoning) if same_anchor else prev_m.reasoning
                 cand_accel = matched.accel if same_anchor else prev_m.accel
                 cand_flip = matched.flip if same_anchor else prev_m.flip
             else:
                 new_score = prev_m.score
+                new_action = prev_m.action
+                new_action_tone = prev_m.action_tone
                 new_chain = prev_m.chain
                 new_plain = prev_m.plain
                 new_summary = prev_m.summary
                 new_watch = prev_m.watch_points
                 new_url = prev_m.source_url
-                new_reasoning = None
+                new_reasoning = prev_m.reasoning
                 cand_accel = prev_m.accel
                 cand_flip = prev_m.flip
 
@@ -469,6 +490,8 @@ def evolve_state(
                 prev_m.model_copy(
                     update={
                         "id": f"M{idx}",
+                        "action": new_action,
+                        "action_tone": new_action_tone,
                         "score": new_score,
                         "status": _format_status(prev_m.first_seen, new_score, status_body),
                         "chain": new_chain,
@@ -491,9 +514,23 @@ def evolve_state(
             if day_advanced:
                 stale = stale + 1 if abs(r5) < 1.5 else 0
             tier = prev_c.tier
-            # Structural demotion is deferred until the rebalance window.
+            # Structural demotion is deferred until the rebalance window, while commentary refreshes when matched.
             tier_label, default_tone = _TIER_LABELS[tier]
+            matched_c = _match_candidate(prev_c, draft_state.candidates)
+            if matched_c is None:
+                prev_syms = set(_extract_syms(prev_c.stocks))
+                matched_c = next(
+                    (
+                        item for item in draft_state.candidates
+                        if item.id == prev_c.id and prev_syms and (prev_syms & set(_extract_syms(item.stocks)))
+                    ),
+                    None,
+                )
+            new_plain = matched_c.plain if matched_c and matched_c.plain.strip() else prev_c.plain
+            new_rule = matched_c.rule if matched_c and matched_c.rule.strip() else prev_c.rule
             log_text = prev_c.history_log.strip() or f"{prev_c.first_seen} 持续跟踪"
+            if tier == "demote" and "纳入升级候选" in log_text:
+                log_text = log_text.replace("纳入升级候选", "触发弱化/淘汰观察")
             locked_candidates.append(
                 prev_c.model_copy(
                     update={
@@ -503,6 +540,8 @@ def evolve_state(
                         "tone": default_tone if tier != prev_c.tier else prev_c.tone,
                         "r5": r5,
                         "r20": r20,
+                        "plain": new_plain,
+                        "rule": new_rule,
                         "stale_days": stale,
                         "history_log": log_text,
                     }
@@ -619,7 +658,10 @@ def evolve_state(
         prev_log = (matched_prev_c.history_log if matched_prev_c else "").strip()
         step_note = f"{et_today_iso}:{tier_label}(5D {r5:+.1f}%)"
         combined_log = f"{prev_log} -> {step_note}" if prev_log and step_note not in prev_log else (c.history_log.strip() or step_note)
-        combined_log = combined_log[-180:]
+        while len(combined_log) > 200 and " -> " in combined_log:
+            combined_log = combined_log.split(" -> ", 1)[1]
+        if len(combined_log) > 200:
+            combined_log = combined_log[:199] + "…"
 
         rebalanced_candidates.append(
             c.model_copy(

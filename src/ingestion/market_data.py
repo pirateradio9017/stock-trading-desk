@@ -476,43 +476,47 @@ def _build_spark_labels(series_map: dict[str, SymbolSeries], now_utc: datetime) 
 
 
 def _build_corr_matrix(series_map: dict[str, SymbolSeries]) -> list[list[float]]:
-    """Compute a 6x6 symmetric Pearson correlation matrix over aligned daily returns."""
+    """Compute a 6x6 symmetric Pearson correlation matrix via pairwise common-date alignment."""
     n = len(CORR_SYMBOLS)
-    frame_data: dict[str, pd.Series] = {}
+    close_series: dict[str, pd.Series] = {}
     for sym in CORR_SYMBOLS:
         s = series_map.get(sym)
-        if s and len(s.dates) >= 10:
-            frame_data[sym] = pd.Series(s.closes, index=pd.to_datetime(s.dates))
+        if s and len(s.dates) >= 9:
+            close_series[sym] = pd.Series(s.closes, index=pd.to_datetime(s.dates)).sort_index()
 
-    if len(frame_data) < 2:
-        return [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    matrix: list[list[float]] = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    if len(close_series) < 2:
+        return matrix
 
-    df = pd.DataFrame(frame_data).sort_index().dropna().tail(21).pct_change(fill_method=None)
-    corr_df = df.corr(min_periods=8)
-
-    matrix: list[list[float]] = []
-    for i, sym_i in enumerate(CORR_SYMBOLS):
-        row: list[float] = []
-        for j, sym_j in enumerate(CORR_SYMBOLS):
-            if i == j:
-                row.append(1.0)
-                continue
-            val: float | None = None
-            if sym_i in corr_df.columns and sym_j in corr_df.index:
-                raw = corr_df.loc[sym_j, sym_i]
-                val = _finite_or_none(raw)
-            if val is None:
-                val = 0.0
-            row.append(round(max(-1.0, min(1.0, val)), 2))
-        matrix.append(row)
-
-    # Enforce strict symmetry.
     for i in range(n):
-        matrix[i][i] = 1.0
+        sym_i = CORR_SYMBOLS[i]
+        si = close_series.get(sym_i)
+        if si is None:
+            continue
         for j in range(i + 1, n):
-            avg = round(0.5 * (matrix[i][j] + matrix[j][i]), 2)
-            matrix[i][j] = avg
-            matrix[j][i] = avg
+            sym_j = CORR_SYMBOLS[j]
+            sj = close_series.get(sym_j)
+            if sj is None:
+                continue
+            common_idx = si.index.intersection(sj.index)
+            if len(common_idx) < 9:
+                continue
+            window_idx = common_idx[-21:]
+            ret_i = si.loc[window_idx].pct_change(fill_method=None).dropna()
+            ret_j = sj.loc[window_idx].pct_change(fill_method=None).dropna()
+            aligned_idx = ret_i.index.intersection(ret_j.index)
+            if len(aligned_idx) < 8:
+                continue
+            ri = ret_i.loc[aligned_idx]
+            rj = ret_j.loc[aligned_idx]
+            if ri.std() == 0 or rj.std() == 0:
+                continue
+            raw = ri.corr(rj)
+            val = _finite_or_none(raw)
+            if val is not None:
+                clamped = round(max(-1.0, min(1.0, val)), 2)
+                matrix[i][j] = clamped
+                matrix[j][i] = clamped
     return matrix
 
 

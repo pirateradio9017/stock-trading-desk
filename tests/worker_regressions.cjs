@@ -33,5 +33,17 @@ vm.runInContext(source, ctx);
   assert.equal(news.items.find(item=>item.event_id==='wscn-1').pubDate,'发布时间未提供');
   assert.equal(news.items.find(item=>item.event_id==='wscn-2').pubDate,'2023-11-15 06:13 UTC+8');
   assert.equal(news.items.find(item=>item.event_id==='wscn-3').pubDate,'发布时间未提供');
-  console.log('PASS: Worker assertions (early close, freshness, returns, premarket pair, research timestamp, symbol coverage, news provenance)');
+  assert.equal(ctx.classifyNewsTag('智利铜矿工会Copper Workers Federation呼吁恢复铜冶炼'), '能源大宗');
+  assert.notEqual(ctx.classifyNewsTag('法国Caisse基础设施部门暂停发债'), 'M1 算力');
+  assert.equal(ctx.classifyNewsTag('比特币升破6万美元关口'), '加密联动');
+  const nowSec = Math.floor(Date.now() / 1000) - 60;
+  ctx.fetch = async () => ({ok:true,json:async()=>({data:{items:[
+    ...Array.from({length: 12}, (_, i) => ({id: 100+i, title: `美股英伟达跟踪标题测试${i}`, uri: `https://example.com/r${i}`, display_time: nowSec - i*60})),
+    {id: 201, title: '本地公园赏秋风景摄影活动', uri: 'https://example.com/noise1', display_time: nowSec + 10},
+    {id: 202, title: '提醒：日内请重点关注（以下均为北京时间）', uri: 'https://example.com/noise2', display_time: nowSec + 20},
+  ]}})});
+  const filteredNews = await ctx.getNewsPayload({DESK_STATE:{get:async()=>null}},{},true);
+  assert.equal(filteredNews.count, 12);
+  assert.ok(filteredNews.items.every(item => !item.title.includes('公园赏秋') && !item.title.includes('提醒：日内')));
+  console.log('PASS: Worker assertions (early close, freshness, returns, premarket pair, research timestamp, symbol coverage, news provenance & word boundaries)');
 })().catch(e=>{console.error(e);process.exitCode=1});

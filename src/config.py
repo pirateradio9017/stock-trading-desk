@@ -223,14 +223,14 @@ FEED_SOURCES: dict[str, FeedSpec] = {
         key="wscn_us_stock",
         name="华尔街见闻美股快讯",
         tier="L1_WIRE_ZH",
-        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=us-stock-channel&limit=20",
+        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=us-stock-channel&limit=40",
         kind="json",
     ),
     "wscn_global": FeedSpec(
         key="wscn_global",
         name="华尔街见闻全球快讯",
         tier="L1_WIRE_ZH",
-        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=20",
+        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=30",
         kind="json",
     ),
     "cnbc_markets": FeedSpec(
@@ -238,6 +238,20 @@ FEED_SOURCES: dict[str, FeedSpec] = {
         name="CNBC Markets",
         tier="L2_WIRE_EN",
         url="https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069",
+        kind="rss",
+    ),
+    "cnbc_economy": FeedSpec(
+        key="cnbc_economy",
+        name="CNBC Economy",
+        tier="L2_WIRE_EN",
+        url="https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        kind="rss",
+    ),
+    "cnbc_world": FeedSpec(
+        key="cnbc_world",
+        name="CNBC World Markets",
+        tier="L2_WIRE_EN",
+        url="https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362",
         kind="rss",
     ),
     "marketwatch_top": FeedSpec(
@@ -293,9 +307,11 @@ FEED_SOURCES: dict[str, FeedSpec] = {
 
 SEC_TRACKED_CIKS: dict[str, str] = {
     "NVDA": "0001045810",
+    "TSM": "0001046179",
     "AAPL": "0000320193",
     "AVGO": "0001730168",
     "AMD": "0000002488",
+    "LMT": "0000936468",
     "COIN": "0001679788",
     "MSTR": "0001050446",
 }

@@ -39,13 +39,33 @@ _RECAP_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+def _compile_kw_regex(keywords: tuple[str, ...]) -> re.Pattern[str]:
+    parts: list[str] = []
+    for kw in keywords:
+        esc = re.escape(kw)
+        if kw.isascii():
+            parts.append(rf"(?<![a-z0-9]){esc}(?![a-z0-9])")
+        else:
+            parts.append(esc)
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+
 _TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("M1 算力", ("英伟达", "nvidia", "nvda", "博通", "avgo", "amd", "芯片", "半导体", "算力", "gpu", "ai", "台积电", "asml", "光模块", "lumentum")),
-    ("电力基建", ("电力", "核电", "电网", "能源", "原油", "布伦特", "wti", "opec", "数据中心", "iren", "nebius", "coreweave", "公用事业")),
-    ("宏观利率", ("美联储", "fed", "fomc", "鲍威尔", "降息", "加息", "通胀", "cpi", "pce", "非农", "美债", "收益率", "黄金", "白银", "日元", "美元")),
-    ("加密联动", ("比特币", "bitcoin", "btc", "以太坊", "加密", "crypto", "coinbase", "strategy", "mstr")),
-    ("并购监管", ("sec", "8-k", "425", "反垄断", "关税", "制裁", "出口管制", "并购", "裁决")),
-    ("全市场宏观", ("日经", "日本", "韩国", "欧洲", "英国", "中国", "港股", "恒生", "a股", "亚太")),
+    ("加密联动", ("比特币", "bitcoin", "btc", "以太坊", "加密", "crypto", "coinbase", "mstr")),
+    ("M1 算力", ("英伟达", "nvidia", "nvda", "博通", "avgo", "amd", "芯片", "半导体", "算力", "gpu", "ai", "openai", "台积电", "tsm", "asml", "光模块", "lumentum", "hbm")),
+    ("能源大宗", ("原油", "布伦特", "wti", "opec", "炼油", "裂解价差", "霍尔木兹", "天然气", "黄金", "白银", "铜矿", "铜价", "大宗商品")),
+    ("电力基建", ("电力", "核电", "电网", "数据中心", "iren", "nebius", "coreweave", "公用事业", "燃气轮机", "变电")),
+    ("宏观利率", ("美联储", "fed", "fomc", "鲍威尔", "欧央行", "ecb", "日央行", "boj", "植田", "降息", "加息", "通胀", "cpi", "pce", "非农", "美债", "国债收益率", "收益率", "日元", "美元指数", "按揭利率")),
+    ("并购监管", ("sec", "8-k", "425", "反垄断", "关税", "制裁", "出口管制", "并购", "裁决", "听证会", "军工", "国防")),
+    ("全市场宏观", ("日经", "日本", "东京", "韩国", "欧洲", "欧元区", "德国", "英国", "港股", "恒生", "亚太", "新兴市场")),
+)
+_COMPILED_TAG_RULES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (tag, _compile_kw_regex(kws)) for tag, kws in _TAG_RULES
+)
+_BOILERPLATE_TITLE_RE = re.compile(
+    r"(^提醒[：:]\s*日内请重点关注|^华尔街见闻早餐|网络视听.*版权|行业自律公约|"
+    r"沪指|深成指|创业板指|北证50|两市成交额|A股三大股指|板块午后|涨停潮)",
+    re.IGNORECASE,
 )
 
 
@@ -103,9 +123,8 @@ def is_predominantly_chinese(text: str) -> bool:
 
 
 def _classify_tag(text: str) -> str:
-    low = text.lower()
-    for tag, keywords in _TAG_RULES:
-        if any(kw in low for kw in keywords):
+    for tag, pattern in _COMPILED_TAG_RULES:
+        if pattern.search(text or ""):
             return tag
     return "美股快讯"
 
@@ -342,18 +361,68 @@ def _is_explicit_old_recap(title: str, publication_day: date) -> bool:
     return publication_day - event_day >= timedelta(days=2)
 
 
+def _truncate_text(text: str, max_len: int) -> str:
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1].rstrip("，,、；;：: ") + "…"
+
+
+_US_RELEVANCE_RE = _compile_kw_regex(
+    (
+        "美股", "纳指", "标普", "道指", "华尔街", "美联储", "联储", "fed", "fomc", "鲍威尔",
+        "欧央行", "ecb", "日央行", "boj", "植田", "东京", "美债", "美元", "日元", "黄金", "白银",
+        "原油", "布伦特", "wti", "opec", "英伟达", "nvidia", "nvda", "苹果", "微软", "谷歌",
+        "亚马逊", "meta", "特斯拉", "博通", "avgo", "amd", "台积电", "tsm", "asml", "洛克希德",
+        "lmt", "光模块", "半导体", "芯片", "算力", "ai", "比特币", "btc", "加密", "coinbase",
+        "mstr", "关税", "通胀", "cpi", "pce", "非农", "pmi", "gdp", "降息", "加息", "高盛",
+        "摩根", "sec", "财报", "并购", "科技股", "军工",
+    )
+)
+
+
+def _is_boilerplate_noise(raw: RawWireItem) -> bool:
+    if not _BOILERPLATE_TITLE_RE.search(raw.title):
+        return False
+    # Keep if it explicitly mentions US/global core macro or US tickers.
+    return not bool(
+        re.search(
+            r"(美股|纳指|标普|美联储|英伟达|台积电|苹果|特斯拉|比特币|原油|黄金|欧央行|日央行|东京|CPI|PCE|FOMC|OPEC)",
+            raw.title,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_relevant_to_us_desk(raw: RawWireItem) -> bool:
+    """Filter out local/non-market boilerplate while retaining US & global macro market wires."""
+    if _is_boilerplate_noise(raw):
+        return False
+    if raw.tag != "美股快讯":
+        return True
+    combined = f"{raw.title} {raw.summary}"
+    return bool(_US_RELEVANCE_RE.search(combined))
+
+
 def select_research_wires(items: list[RawWireItem], now_utc: datetime) -> list[RawWireItem]:
-    """Screen for recent publication and explicit archival headlines before clustering."""
+    """Screen for recent publication, US-desk relevance, and explicit archival headlines before clustering."""
     oldest = now_utc - _RESEARCH_MAX_AGE
     eligible = []
     for item in items:
         published = item.pub_dt_utc
         if published is None or not oldest <= published <= now_utc:
             continue
+        if _is_boilerplate_noise(item):
+            continue
         publication_day = published.astimezone(TZ_CN if item.lang == "zh" else timezone.utc).date()
         if not _is_explicit_old_recap(item.title, publication_day):
             eligible.append(item)
-    return deduplicate_wire_items(eligible)
+    clustered = deduplicate_wire_items(eligible)
+    relevant = [x for x in clustered if _is_relevant_to_us_desk(x)]
+    if len(relevant) >= 12:
+        return relevant
+    seen = {x.event_id for x in relevant}
+    return relevant + [x for x in clustered if x.event_id not in seen]
 
 
 async def _fetch_feed(
@@ -383,24 +452,6 @@ async def _fetch_feed(
             return spec.key, []
 
 
-_US_RELEVANCE_RE = re.compile(
-    r"(美股|纳指|标普|道指|华尔街|美联储|联储|鲍威尔|美债|美元|日元|黄金|白银|原油|布伦特|wti|"
-    r"英伟达|nvidia|nvda|苹果|微软|谷歌|亚马逊|meta|特斯拉|博通|amd|台积电|asml|光模块|半导体|芯片|算力|ai|"
-    r"比特币|btc|加密|coinbase|mstr|关税|通胀|cpi|pce|非农|pmi|gdp|降息|加息|高盛|摩根|sec|财报|并购|科技股)",
-    re.IGNORECASE,
-)
-
-
-def _is_relevant_to_us_desk(raw: RawWireItem) -> bool:
-    """Keep US-channel / Google-News-ZH items, and filter global-channel noise to market-relevant news."""
-    if raw.tag != "美股快讯":
-        return True
-    combined = f"{raw.title} {raw.summary}"
-    if _US_RELEVANCE_RE.search(combined):
-        return True
-    return False
-
-
 def build_chinese_news_response(
     deduped_items: list[RawWireItem],
     now_utc: datetime,
@@ -408,22 +459,24 @@ def build_chinese_news_response(
     limit: int = 25,
 ) -> NewsResponse:
     """Select verified pure-Chinese deduped items relevant to the US trading desk for `/api/news`."""
+    relevant_pool = [item for item in deduped_items if _is_relevant_to_us_desk(item) and is_predominantly_chinese(item.title)]
+    irrelevant_pool = [item for item in deduped_items if not _is_relevant_to_us_desk(item) and is_predominantly_chinese(item.title)]
+
+    # Pass 1: US-desk relevant Chinese stories; Pass 2: backfill ONLY when < 10 relevant items.
+    selected_raw: list[RawWireItem] = list(relevant_pool[:limit])
+    if len(selected_raw) < min(10, limit):
+        need = min(10, limit) - len(selected_raw)
+        selected_raw.extend(irrelevant_pool[:need])
+
+    # Keep global chronological order (newest dated first, undated at end).
+    selected_raw.sort(key=lambda x: x.pub_dt_utc or _EARLIEST_UTC, reverse=True)
+
     zh_items: list[NewsItem] = []
     seen_event_ids: set[str] = set()
-
-    # Pass 1: US-desk relevant Chinese stories; Pass 2: backfill only if < 10 relevant items.
-    ordered_candidates = [
-        item for item in deduped_items if _is_relevant_to_us_desk(item)
-    ] + [
-        item for item in deduped_items if not _is_relevant_to_us_desk(item)
-    ]
-
-    for raw in ordered_candidates:
+    for raw in selected_raw:
         if raw.event_id in seen_event_ids:
             continue
-        if not is_predominantly_chinese(raw.title):
-            continue
-        summary = raw.summary.strip()
+        summary = _truncate_text(raw.summary, 220)
         if len(summary) < 4:
             summary = f"{raw.title}（{raw.source}实时快讯）"
         try:

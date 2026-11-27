@@ -297,22 +297,32 @@ def build_research_context(
         ]
         lines.append("  30D累计涨跌剪刀差: " + ", ".join(tail_vals))
 
-    lines.append("\n=== 7. 五维宏观代理基准（实测定量） ===")
+    lines.append("\n=== 7. 五维宏观代理基准与 FRED L1 官方数据（实测定量） ===")
     for p in bundle.primary.macro_proxies:
         lines.append(f"  [{p.chain_id}] {p.title}: score={p.score}, state={p.state}, wind={p.wind} | {p.feature}")
+    if bundle.primary.fred_metrics:
+        fred_labels = {
+            "BAMLH0A0HYM2": "FRED 高收益债 OAS(%)",
+            "BAMLH0A0HYM2EY": "FRED 高收益债有效收益率(%)",
+            "DGS10": "FRED 10Y 美债(%)",
+            "MORTGAGE30US": "FRED 30Y 固定按揭利率(%)",
+        }
+        for sid, (obs_date, obs_val) in bundle.primary.fred_metrics.items():
+            lines.append(f"  [L1 FRED] {fred_labels.get(sid, sid)}: {obs_val:.2f}% (截至 {obs_date})")
 
     if bundle.primary.sec_filings:
-        lines.append("\n=== 8. SEC EDGAR L1 一手公告 ===")
+        lines.append("\n=== 8. SEC EDGAR L1 一手公告（含已抓取正文首段摘录） ===")
         for f in bundle.primary.sec_filings[:8]:
-            lines.append(f"  {f.filing_date} | {f.sym} {f.form} (Items: {f.items or '-'}) | {f.url}")
+            excerpt_note = f" | L1正文摘录: {f.excerpt}" if f.excerpt else " | 仅索引（未抓取正文）"
+            lines.append(f"  {f.filing_date} | {f.sym} {f.form} (Items: {f.items or '-'}) | {f.url}{excerpt_note}")
 
     lines.append("\n=== 9. 近 48 小时发布时间可识别的媒体快讯 ===")
     for n in bundle.news.research_items[:20]:
         lines.append(f"  [{n.lang.upper()}|{n.source}|{n.tag}] {n.title}（来源发布时间 {n.pub_date_cn}） | 摘要（未核验原文）: {n.summary[:600]} | {n.link}")
 
-    lines.append("\n=== 10. 未来日程 ===")
-    for ev in bundle.primary.calendar_events[:6]:
-        lines.append(f"  {ev.day} {ev.time} | {ev.title} [{ev.tag}]")
+    lines.append("\n=== 10. 未来日程（含 NYSE 提前收市与已核验官方日程） ===")
+    for ev in bundle.primary.calendar_events[:8]:
+        lines.append(f"  {ev.day} {ev.time} | {ev.title} [{ev.tag}] — {ev.desc[:120]}")
 
     lines.append("\n=== 11. VERIFIED_URLS（所有 source_url 必须从此列表中原样选取） ===")
     for label, url in _collect_context_urls(bundle):
@@ -343,8 +353,9 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
    - 换锚复核只是候选信号。锁定期沿用已接受锚定标的；开放窗口结合当前量价、估值及独立证据复核，若接受换锚，重新写齐该标的的逻辑、确认位与失效位，禁止继承旧锚价位。
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
    - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
-   - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；不强行制造行业催化。
-   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。按素材实际覆盖欧亚股市、美国行业与公司、利率汇率、能源商品和加密，不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
+   - **代理指标与文风硬约束**：`compute`（AI 电力与新云基建动量）与 `semi_demand`（半导体与算力价格动量）的评分本质是 5 日价格动量公式，**严禁将其称为“基本面评分”或编造“价格与基本面背离”**；所有中文正文中**严禁泄露代码内部字段名**（如 `semi_demand`、`chain_id`）及漏写货币单位（统一写 `美元` 或 `$`，不得写 `元` 代替美元）；若 SEC 公告已附“L1正文摘录”，须直接引用摘录事实说明公告实质，而非一律写“正文未核验”。
+   - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；候补的 `plain` 与 `history_log` 必须与自身 `tier`（升级/跟踪/弱化淘汰）自洽，禁止“分级为弱化淘汰、备注写纳入升级候选”。
+   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。优先覆盖隔夜与亚欧关键宏观/央行/通胀/商品/半日市催化，按素材实际覆盖不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
 5. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 
@@ -479,7 +490,7 @@ def build_deterministic_draft(
         stance=stance,
         vix_note=f"VIX 报 {_fmt_num(vix_p)}（日 {_fmt_pct(q_vix.chg if q_vix else None)}，20D {_fmt_pct(q_vix.r20 if q_vix else None)}），{'避险对冲溢价偏高' if (vix_p or 0) >= 20 else '波动率处于可控区间'}",
         tnx_note=f"10Y 美债报 {_fmt_num(tnx_p, 2, '%')}（5D {_fmt_pct(q_tnx.r5 if q_tnx else None)}），TLT 5D {_fmt_pct(q_tlt.r5 if q_tlt else None)}",
-        btc_note=f"BTC 报 {_fmt_num(q_btc.price if q_btc else None, 0, '$')}（日 {_fmt_pct(q_btc.chg if q_btc else None)}，20D {_fmt_pct(q_btc.r20 if q_btc else None)}）",
+        btc_note=f"BTC 报 {f'${q_btc.price:,.0f}' if (q_btc and q_btc.price is not None) else 'DATA_PENDING'}（日 {_fmt_pct(q_btc.chg if q_btc else None)}，20D {_fmt_pct(q_btc.r20 if q_btc else None)}）",
     )
 
     # 5 dynamic market theme clusters ranked by live quantitative momentum & consensus
@@ -769,6 +780,7 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
+            "temperature": 0.25,
             "max_tokens": 24000,
             "stream": False,
         })
@@ -777,8 +789,18 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
         if choice.get("finish_reason") != "stop":
             raise ValueError("DeepSeek response incomplete: " + str(choice.get("finish_reason")))
         draft = ResearchDraft.model_validate_json(choice["message"].get("content") or "")
-        if (len(draft.mainlines), len(draft.candidates), len(draft.linkage)) != (5, 6, 4):
-            raise ValueError(f"DeepSeek returned incorrect research card counts: M={len(draft.mainlines)} C={len(draft.candidates)} L={len(draft.linkage)}")
+        if (
+            len(draft.mainlines) != 5
+            or len(draft.candidates) != 6
+            or len(draft.linkage) != 4
+            or len(draft.macro_notes) != 5
+            or len({m.id for m in draft.mainlines}) != 5
+            or len({c.id for c in draft.candidates}) != 6
+        ):
+            raise ValueError(
+                f"DeepSeek returned incorrect research card counts: "
+                f"M={len(draft.mainlines)} C={len(draft.candidates)} L={len(draft.linkage)} Mac={len(draft.macro_notes)}"
+            )
         return draft
 
 

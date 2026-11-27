@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: "7 */4 * * *"
     - cron: "7 2,6,10,14,18,22 * * *"
-    - cron: "40 13,16 * * 1-5"
+    - cron: "32 13,16 * * 1-5"
       timezone: America/New_York
   workflow_dispatch:
     inputs:
@@ -48,23 +48,34 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          from datetime import datetime, timezone
+          from datetime import datetime, time, timezone
 
-          from src.config import get_market_session, get_research_window
+          from src.config import TZ_ET, get_market_close, get_market_session, get_research_window, is_us_trading_day
 
           now = datetime.now(timezone.utc)
+          et = now.astimezone(TZ_ET)
           session = get_market_session(now)
           window = get_research_window(now)
           schedule = os.environ["DESK_SCHEDULE"]
+          catchup_rebalance = False
           if os.environ["DESK_EVENT_NAME"] == "workflow_dispatch" or schedule == "7 */4 * * *":
               run = True
-          elif schedule == "40 13,16 * * 1-5":
-              run = window == "REBALANCE_WINDOW"
+          elif schedule == "32 13,16 * * 1-5":
+              close_h = get_market_close(et.date()).hour
+              if window == "REBALANCE_WINDOW":
+                  run = True
+              elif is_us_trading_day(et.date()) and time(close_h + 1, 0) <= et.time() < time(close_h + 1, 25):
+                  # GitHub Actions queue delay slipped past the 30-min rebalance window; still execute once.
+                  run = True
+                  catchup_rebalance = True
+              else:
+                  run = False
           else:
               run = session in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"}
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print(f"run={str(run).lower()}", file=output)
-          print(f"Research slot: {session} / {window}, run={run}")
+              print(f"catchup_rebalance={str(catchup_rebalance).lower()}", file=output)
+          print(f"Research slot: {session} / {window}, run={run}, catchup={catchup_rebalance}")
           PY
 
       - name: Install dependencies
@@ -84,7 +95,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
           ARGS="--publish-kv"
-          if [ "${{ inputs.force_rebalance }}" = "true" ]; then
+          if [ "${{ inputs.force_rebalance }}" = "true" ] || [ "${{ steps.research-slot.outputs.catchup_rebalance }}" = "true" ]; then
             ARGS="$ARGS --force-rebalance"
           fi
           python -m src.pipeline $ARGS

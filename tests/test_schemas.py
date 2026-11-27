@@ -456,7 +456,7 @@ def test_config_symbols_feeds_sessions_and_no_deepseek() -> None:
     assert len(config.CORR_LABELS) == 6
     assert len(config.SCISSOR_SERIES) == 5
 
-    assert len(config.FEED_SOURCES) == 16
+    assert len(config.FEED_SOURCES) == 18
     assert "sec_edgar_submissions" in config.FEED_SOURCES
     assert config.FEED_SOURCES["sec_edgar_submissions"].requires_sec_ua is True
     assert "sec_edgar_current_rss" in config.FEED_SOURCES
