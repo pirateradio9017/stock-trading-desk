@@ -517,7 +517,13 @@ def test_screener_url_preserves_scrids_and_yfinance_fallback_is_bounded(monkeypa
 def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     from pathlib import Path
     import yaml
-    from src.config import SCHEDULE_ACTIVE_ODD_CRON, SCHEDULE_BASELINE_CRON, SCHEDULE_REBALANCE_CRON
+    from src.config import (
+        SCHEDULE_ACTIVE_ODD_CRON,
+        SCHEDULE_BASELINE_CRON,
+        SCHEDULE_CROSS_MARKET_CRON,
+        SCHEDULE_REBALANCE_CRON,
+        resolve_research_schedule,
+    )
 
     wf_path = Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'pipeline.yml'
     wf = yaml.safe_load(wf_path.read_text(encoding='utf-8'))
@@ -525,9 +531,12 @@ def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     crons = [entry['cron'] for entry in on_cfg['schedule']]
     assert SCHEDULE_BASELINE_CRON in crons
     assert SCHEDULE_ACTIVE_ODD_CRON in crons
+    assert SCHEDULE_CROSS_MARKET_CRON in crons
     assert SCHEDULE_REBALANCE_CRON in crons
     rebal_entry = next(entry for entry in on_cfg['schedule'] if entry['cron'] == SCHEDULE_REBALANCE_CRON)
     assert rebal_entry.get('timezone') == 'America/New_York'
+    cm_dec = resolve_research_schedule('schedule', SCHEDULE_CROSS_MARKET_CRON, datetime(2026, 11, 27, 6, 40, tzinfo=timezone.utc))
+    assert cm_dec.run is True and cm_dec.reason == 'cross_market_close_open'
 
     steps = wf['jobs']['run-pipeline']['steps']
     slot_step = next(st for st in steps if st.get('id') == 'research-slot')
@@ -535,3 +544,52 @@ def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     run_step = next(st for st in steps if 'Run research pipeline' in st.get('name', ''))
     assert run_step['env']['DESK_LLM_PROVIDER'] == 'auto'
     assert '--catchup-rebalance' in run_step['run']
+
+
+def test_cross_timezone_quote_freshness_and_noise_filter():
+    from src.ingestion.news_aggregator import RawWireItem, _classify_tag, select_research_wires
+    from src.models.schemas import QuoteItem
+    from src.research.analyst import build_research_context
+
+    # Friday 2026-11-27 08:35 UTC = 16:35 UTC+8 = 03:35 ET (OFF_HOURS before US pre-market)
+    now_utc = datetime(2026, 11, 27, 8, 35, tzinfo=timezone.utc)
+    b = _make_test_bundle(now_utc)
+    # Simulate stale Wednesday close for US NVDA/ASML vs fresh Friday APAC/EU/futures quotes.
+    stale_ts = '2026-11-25T21:00:00Z'
+    fresh_ts = '2026-11-27T08:30:00Z'
+    for q in b.market.live.quotes:
+        if q.sym in ('NVDA', 'ASML', 'TSM'):
+            q.tsUtc = stale_ts
+    extra_quotes = [
+        QuoteItem(sym='ES=F', name='标普500期货', price=7329.75, chg=1.86, r5=2.1, r20=-4.0, source='yahoo_v8', tsUtc=fresh_ts),
+        QuoteItem(sym='NQ=F', name='纳指100期货', price=26793.5, chg=2.66, r5=1.9, r20=-7.2, source='yahoo_v8', tsUtc=fresh_ts),
+        QuoteItem(sym='2330.TW', name='台积电台股(TWD)', price=2180.0, chg=1.63, r5=4.0, r20=1.2, source='yahoo_v8', tsUtc='2026-11-27T05:30:00Z'),
+        QuoteItem(sym='000660.KS', name='SK海力士(KRW)', price=1110000.0, chg=6.42, r5=5.1, r20=-2.0, source='yahoo_v8', tsUtc='2026-11-27T06:30:00Z'),
+        QuoteItem(sym='ASML.AS', name='阿斯麦欧股(EUR)', price=1222.8, chg=4.67, r5=3.2, r20=-6.5, source='yahoo_v8', tsUtc=fresh_ts),
+    ]
+    b.market.live.quotes.extend(extra_quotes)
+    b.primary.apac_eu_summary['2330.TW'] = {'name': '台积电台股(TWD)', 'price': 2180.0, 'chg': 1.63, 'r5': 4.0, 'r20': 1.2, 'tsUtc': '2026-11-27T05:30:00Z'}
+    b.primary.apac_eu_summary['ASML.AS'] = {'name': '阿斯麦欧股(EUR)', 'price': 1222.8, 'chg': 4.67, 'r5': 3.2, 'r20': -6.5, 'tsUtc': fresh_ts}
+
+    dec = evaluate_governance_window(now_utc)
+    ctx = build_research_context(b, None, dec)
+    assert '停盘旧价 11-25' in ctx
+    assert 'ES=F' in ctx and 'NQ=F' in ctx
+    assert '2330.TW' in ctx and 'ASML.AS' in ctx
+    assert '今日最新 11-27' in ctx
+
+    # Non-market social/gadget noise filtered while APAC chip & export-control catalysts remain.
+    wires = [
+        RawWireItem('n1', '韩国高考作弊查处量激增 涉智能设备案件增至去年3.6倍', '韩国教育部门通报高考作弊情况', _classify_tag('韩国高考作弊查处量激增'), '华尔街见闻', 'L1_WIRE_ZH', 'zh', now_utc, '2026-11-27 15:58 UTC+8', 'https://wallstreetcn.com/n1', 100),
+        RawWireItem('n2', '传小米AI眼镜2代或将于12月中旬发布，客服回应', '客服称暂无官方消息', _classify_tag('传小米AI眼镜2代或将于12月中旬发布，客服回应'), '华尔街见闻', 'L1_WIRE_ZH', 'zh', now_utc, '2026-11-27 16:27 UTC+8', 'https://wallstreetcn.com/n2', 100),
+        RawWireItem('n3', '新型机器人夹爪实现象鼻般的灵敏触觉', '科研团队发表论文', _classify_tag('新型机器人夹爪实现象鼻般的灵敏触觉'), '华尔街见闻', 'L1_WIRE_ZH', 'zh', now_utc, '2026-11-27 16:16 UTC+8', 'https://wallstreetcn.com/n3', 100),
+        RawWireItem('n4', '11月27日航锦科技涨停：半导体，国产芯片，英伟达概念热股_个股掘金 - 证券之星', 'A股涨停播报', _classify_tag('11月27日航锦科技涨停：英伟达概念热股_个股掘金'), 'Google News 中文美股', 'L2_WIRE_ZH', 'zh', now_utc, '2026-11-27 16:40 UTC+8', 'https://example.com/n4', 80),
+        RawWireItem('n5', '$英伟达 (NVDA.US)$ - Moomoo', '行情页', _classify_tag('$英伟达 (NVDA.US)$ - Moomoo'), 'Google News 中文美股', 'L2_WIRE_ZH', 'zh', now_utc, '2026-11-27 16:40 UTC+8', 'https://example.com/n5', 80),
+        RawWireItem('g1', 'SK海力士大涨超6%带动韩国KOSPI收涨4.3%，台积电台股收于2180新台币', '亚太半导体板块全面走强', _classify_tag('SK海力士大涨超6%带动韩国KOSPI收涨4.3%，台积电台股收于2180新台币'), '华尔街见闻', 'L1_WIRE_ZH', 'zh', now_utc, '2026-11-27 14:35 UTC+8', 'https://wallstreetcn.com/g1', 100),
+        RawWireItem('g2', '中国商务部顺延对美镓、锗、锑出口禁令暂停期至2027年1月10日', '商务部公告顺延出口管制暂停期', _classify_tag('中国商务部顺延对美镓、锗、锑出口禁令暂停期至2027年1月10日'), '华尔街见闻', 'L1_WIRE_ZH', 'zh', now_utc, '2026-11-27 14:20 UTC+8', 'https://wallstreetcn.com/g2', 100),
+    ]
+    selected = select_research_wires(wires, now_utc)
+    selected_links = {w.link for w in selected}
+    assert selected_links == {'https://wallstreetcn.com/g1', 'https://wallstreetcn.com/g2'}
+    assert _classify_tag('SK海力士大涨带动芯片股走强') == 'M1 算力'
+    assert _classify_tag('中国商务部顺延镓锗锑出口禁令暂停期') == '并购监管'

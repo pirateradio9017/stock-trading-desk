@@ -448,8 +448,9 @@ def test_config_symbols_feeds_sessions_and_no_deepseek() -> None:
     expected_core.update({"TSM", "LMT"})
     assert len(config.CORE_SYMBOLS) == 29
     assert {s.sym for s in config.CORE_SYMBOLS} == expected_core
-    assert len(config.APAC_SYMBOLS) == 5
-    assert len(config.EU_SYMBOLS) == 3
+    assert len(config.US_FUTURES_SYMBOLS) == 2
+    assert len(config.APAC_SYMBOLS) == 8
+    assert len(config.EU_SYMBOLS) == 4
     assert len(config.CREDIT_MACRO_SYMBOLS) == 7
     assert len(config.AUXILIARY_BENCHMARK_SYMBOLS) == 2
     assert len(config.CORR_SYMBOLS) == 6

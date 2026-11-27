@@ -535,7 +535,35 @@ process.on('beforeExit', () => {
   assert.equal(unhandledCount, 0, 'raceWithDeadline must never emit unhandledRejection');
 
   // 10. Scheduled maintenance: APAC/EU live coverage, KV warm throttle, research auto-dispatch cadence & cooldown
-  assert.ok(edgeSymbols.includes('^N225') && edgeSymbols.includes('^HSI') && edgeSymbols.includes('^GDAXI'));
+  assert.ok(
+    edgeSymbols.includes('^N225') &&
+    edgeSymbols.includes('^HSI') &&
+    edgeSymbols.includes('^GDAXI') &&
+    edgeSymbols.includes('ES=F') &&
+    edgeSymbols.includes('NQ=F') &&
+    edgeSymbols.includes('2330.TW') &&
+    edgeSymbols.includes('000660.KS') &&
+    edgeSymbols.includes('005930.KS') &&
+    edgeSymbols.includes('ASML.AS')
+  );
+  assert.equal(ctx.isBoilerplateNoise('韩国高考作弊查处量激增 涉智能设备案件增至去年3.6倍'), true);
+  assert.equal(ctx.isBoilerplateNoise('传小米AI眼镜2代或将于12月中旬发布，客服回应'), true);
+  assert.equal(ctx.isBoilerplateNoise('SK海力士大涨6%带动韩国KOSPI创收盘新高'), false);
+
+  // Cross-market APAC close window (2026-11-27 14:40 UTC+8 = 06:40 UTC) dispatches even if state is only 50m old
+  const apacCloseNow = new Date('2026-11-27T06:40:00Z');
+  const preApacCloseState = { serverSyncedAt: '2026/11/27 13:50:00 UTC+8', history: [] };
+  const apacDec = ctx.evaluateResearchDispatch(preApacCloseState, null, apacCloseNow);
+  assert.equal(apacDec.shouldDispatch, true);
+  assert.equal(apacDec.reason, 'cross_market_apac_close');
+  // Once synced inside the APAC close window (14:38 UTC+8), does not re-dispatch
+  const doneApacCloseState = { serverSyncedAt: '2026/11/27 14:38:00 UTC+8', history: [] };
+  assert.equal(ctx.evaluateResearchDispatch(doneApacCloseState, null, apacCloseNow).shouldDispatch, false);
+  // Cross-market EU open window (2026-11-27 16:10 UTC+8 = 08:10 UTC) dispatches when last sync was 14:40 UTC+8
+  const euOpenNow = new Date('2026-11-27T08:10:00Z');
+  const euDec = ctx.evaluateResearchDispatch({ serverSyncedAt: '2026/11/27 14:40:00 UTC+8', history: [] }, null, euOpenNow);
+  assert.equal(euDec.shouldDispatch, true);
+  assert.equal(euDec.reason, 'cross_market_eu_open');
 
   // Active US intraday (2026-11-25 15:00 UTC = 10:00 ET): 60m old state triggers hourly dispatch
   const activeNow = new Date('2026-11-25T15:00:00Z');

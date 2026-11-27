@@ -10,7 +10,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Literal
 
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.config import (
     CORR_LABELS,
     SYMBOL_NAME_MAP,
+    SYMBOL_SPEC_MAP,
     TZ_CN,
     TZ_ET,
     format_cn_timestamp,
@@ -177,6 +178,60 @@ def _fmt_pct(val: float | None) -> str:
     return f"{val:+.2f}%"
 
 
+_ALWAYS_LIVE_CATEGORIES = frozenset({"index_future", "commodity", "crypto", "fx", "volatility"})
+
+
+def _parse_utc_iso(ts_str: str | None) -> datetime | None:
+    s = (ts_str or "").strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _quote_freshness_tag(
+    sym: str,
+    ts_utc_str: str | None,
+    now_utc: datetime,
+    decision: GovernanceDecision,
+) -> str:
+    """Explicitly tag each quote as live/recent vs stale closed session to prevent cross-day misreads."""
+    q_dt = _parse_utc_iso(ts_utc_str)
+    if q_dt is None:
+        return "[报价时间缺失]"
+    spec = SYMBOL_SPEC_MAP.get(sym)
+    region = spec.region if spec else "US"
+    category = spec.category if spec else "equity"
+    is_us_cash_hours = (region == "US" and category not in _ALWAYS_LIVE_CATEGORIES) or sym == "ASML"
+    age_hours = (now_utc - q_dt).total_seconds() / 3600.0
+
+    if is_us_cash_hours:
+        q_et = q_dt.astimezone(TZ_ET)
+        now_et = now_utc.astimezone(TZ_ET)
+        is_prior_session = q_et.date() < now_et.date() or age_hours >= 4.0
+        if decision.market_session in ("OFF_HOURS", "HOLIDAY") and is_prior_session:
+            return f"[停盘旧价 {q_et.strftime('%m-%d %H:%M ET')}｜美股未开盘，严禁当今日涨跌]"
+        if decision.market_session == "PRE_MARKET" and is_prior_session:
+            return f"[上日收盘 {q_et.strftime('%m-%d %H:%M ET')}｜常规盘未开]"
+        return f"[美股最新 {q_et.strftime('%m-%d %H:%M ET')}]"
+
+    q_cn = q_dt.astimezone(TZ_CN)
+    now_cn = now_utc.astimezone(TZ_CN)
+    if age_hours <= 12.0 or q_cn.date() == now_cn.date():
+        return f"[今日最新 {q_cn.strftime('%m-%d %H:%M UTC+8')}]"
+    return f"[较旧报价 {q_cn.strftime('%m-%d %H:%M UTC+8')}]"
+
+
+def _format_ah_note(ah_price: float | None, ah_chg: float | None, decision: GovernanceDecision) -> str:
+    if ah_price is None or not math.isfinite(ah_price):
+        return ""
+    label = "盘前" if decision.market_session == "PRE_MARKET" else "盘前/盘后"
+    return f" | {label}={_fmt_num(ah_price)}({_fmt_pct(ah_chg)})"
+
+
 def _collect_context_urls(bundle: IngestionBundle) -> list[tuple[str, str]]:
     """Collect deduplicated verified URLs with short labels for grounded citation."""
     seen: set[str] = set()
@@ -195,7 +250,7 @@ def _collect_context_urls(bundle: IngestionBundle) -> list[tuple[str, str]]:
     for symbol, valuation in bundle.market.valuations.items():
         if valuation.forward_pe is not None:
             _add(f"Yahoo {symbol} 预期市盈率", valuation.source_url)
-    for n in bundle.news.research_items[:20]:
+    for n in bundle.news.research_items[:30]:
         _add(f"新闻[{n.tag}] {n.title[:28]}", n.link)
     return items
 
@@ -211,11 +266,24 @@ def build_research_context(
     et_str = format_et_short(now_utc)
     cn_str = format_cn_timestamp(now_utc)
 
+    if decision.market_session in ("OFF_HOURS", "HOLIDAY"):
+        cross_tz_note = (
+            "美股现货当前未开盘（停盘旧价），严禁拿上一交易日美股现货涨跌幅与今日亚欧/期货/商品做同日背离对比；"
+            "当前实时定价由美股期指(ES=F/NQ=F)、亚太与欧洲现货及芯片龙头(2330.TW/000660.KS/005930.KS/ASML.AS)、大宗期货与BTC主导。"
+        )
+    elif decision.market_session == "PRE_MARKET":
+        cross_tz_note = (
+            "美股处于盘前时段，常规盘现货尚未开盘；跨市场传导须优先参考实时期指(ES=F/NQ=F)、美股盘前报价与亚欧现货最新走势。"
+        )
+    else:
+        cross_tz_note = "美股处于活跃交易/盘后结算时段，美股现货与期货可与亚欧收盘共同验证传导。"
+
     lines: list[str] = [
         "=== 1. 时段与治理状态 ===",
         f"美东时间: {et_str} | 北京时间: {cn_str}",
         f"交易时段: {decision.market_session} | 治理窗口: {decision.window} | 允许调仓换线: {decision.allow_structural_rebalance}",
         f"治理说明: {decision.reason}",
+        f"跨时区实盘提醒: {cross_tz_note}",
     ]
 
     if prev_state is not None:
@@ -234,19 +302,21 @@ def build_research_context(
                 f"连续 {review.lead_sessions} 个同日窗口领先≥3个百分点（截至 {review.as_of}）。"
             )
 
-    lines.append("\n=== 3. 核心跨资产实测行情（禁止编造） ===")
+    lines.append("\n=== 3. 核心跨资产与美股期指实测行情（禁止编造；严格区分今日最新 vs 停盘旧价） ===")
     macro_syms = [
-        "^GSPC", "^IXIC", "^VIX", "^MOVE", "^TNX", "DX-Y.NYB",
+        "ES=F", "NQ=F", "^GSPC", "^IXIC", "^VIX", "^MOVE", "^TNX", "DX-Y.NYB",
         "TLT", "HYG", "LQD", "GC=F", "SI=F", "HG=F", "BZ=F", "JPY=X", "BTC-USD",
     ]
     for sym in macro_syms:
         q = market.get_quote(sym)
         if q:
+            fresh_tag = _quote_freshness_tag(sym, q.tsUtc, now_utc, decision)
+            ah_note = _format_ah_note(q.ahPrice, q.ahChg, decision)
             lines.append(
-                f"  {sym:8s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}"
+                f"  {sym:8s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{ah_note} | {fresh_tag}"
             )
 
-    lines.append("\n=== 4. 行业板块与核心个股动量（按20D强弱排序） ===")
+    lines.append("\n=== 4. 行业板块与核心个股动量（按20D强弱排序；标注美股是否停盘旧价） ===")
     sector_syms = [
         "ITB", "XLP", "XLU", "AAPL", "QQQ", "SPY", "XLF", "XLE",
         "SOXX", "SMH", "ASML", "NVDA", "AVGO", "AMD", "LITE", "TSM", "LMT",
@@ -265,15 +335,20 @@ def build_research_context(
             + (f"，同公司最近 {len(samples)} 个有效历史点中位={reference:.2f}倍" if reference is not None else "")
             if current_pe is not None else ""
         )
+        fresh_tag = _quote_freshness_tag(q.sym, q.tsUtc, now_utc, decision)
+        ah_note = _format_ah_note(q.ahPrice, q.ahChg, decision)
         lines.append(
-            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{val_info}"
+            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{ah_note}{val_info} | {fresh_tag}"
         )
 
     if bundle.primary.apac_eu_summary:
-        lines.append("\n=== 5. 亚太与欧洲盘面联动 ===")
+        lines.append("\n=== 5. 亚太与欧洲盘面联动（含亚欧芯片龙头现货；注意 TWD/KRW/EUR 币种） ===")
         for sym, info in bundle.primary.apac_eu_summary.items():
+            q_live = market.get_quote(sym)
+            ts_str = info.get("tsUtc") or (q_live.tsUtc if q_live else None)
+            fresh_tag = _quote_freshness_tag(sym, ts_str, now_utc, decision)
             lines.append(
-                f"  {sym} ({info.get('name', sym)}): 现价={_fmt_num(info.get('price'))} | 日={_fmt_pct(info.get('chg'))} | 5D={_fmt_pct(info.get('r5'))} | 20D={_fmt_pct(info.get('r20'))}"
+                f"  {sym:10s} ({info.get('name', sym)}): 现价={_fmt_num(info.get('price'))} | 日={_fmt_pct(info.get('chg'))} | 5D={_fmt_pct(info.get('r5'))} | 20D={_fmt_pct(info.get('r20'))} | {fresh_tag}"
             )
 
     lines.append("\n=== 6. 6x6 跨资产相关性矩阵与30D剪刀差 ===")
@@ -317,7 +392,7 @@ def build_research_context(
             lines.append(f"  {f.filing_date} | {f.sym} {f.form} (Items: {f.items or '-'}) | {f.url}{excerpt_note}")
 
     lines.append("\n=== 9. 近 48 小时发布时间可识别的媒体快讯 ===")
-    for n in bundle.news.research_items[:20]:
+    for n in bundle.news.research_items[:30]:
         lines.append(f"  [{n.lang.upper()}|{n.source}|{n.tag}] {n.title}（来源发布时间 {n.pub_date_cn}） | 摘要（未核验原文）: {n.summary[:600]} | {n.link}")
 
     lines.append("\n=== 10. 未来日程（含 NYSE 提前收市与已核验官方日程） ===")
@@ -345,17 +420,19 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
 3. **候补池与联动**：
    - `candidates` 必须恰好 6 条（C1..C6），覆盖 `upgrade`（准备升级）、`watch`（强化跟踪）、`demote`（弱化/淘汰）三类梯度，每条给出清晰的 `rule`（晋级/淘汰量化触发条件）与非空 `history_log`。
    - `linkage` 必须恰好 4 条，紧扣实测 6x6 相关系数与 30D 剪刀差（例如股债跷跷板 SPY/TLT、算力与大盘 SPY/NVDA、黄金避险 SPY/GLD、加密与高Beta流动性 NVDA/BTC），写清传导机理（`why`）与当下交易信号（`signal`）。
-4. **研究输出结构**：
-   - headline 只说本轮最重要变化；plain_guide 用三句话分别解释事实、影响、下一步观察。
+4. **研究输出结构与跨时区对齐铁律**：
+   - **严禁时空错位（最高优先级）**：必须逐条核对 Briefing 标注的报价新鲜度与时间。凡标注为「停盘旧价 / 美股未开盘 / 上日收盘」的美股现货涨跌幅（如前一日收盘的 `NVDA`、`ASML`、`TSM`、`SPY`、`SMH`），**严禁**与今日实时或刚收盘的亚太、欧股、美股期指、大宗商品拼在一起声称“同日背离”或“逆势下跌”！
+   - **美股闭市/盘前时的跨时区定价逻辑**：当 `market_session` 为 `OFF_HOURS`、`HOLIDAY` 或 `PRE_MARKET` 时，检验亚欧盘面是否向美股传导，**必须优先看实时美股期指（`ES=F`、`NQ=F`）、亚太芯片龙头现货（`2330.TW`、`000660.KS`、`005930.KS`）、欧股芯片现货（`ASML.AS`）及美股盘前报价（若有）**。若亚欧芯片潮与 `NQ=F`/`ES=F` 共振大涨，应客观定性为“亚欧与期指端风险偏好/芯片链共振走强，待美股开盘现货承接确认”，并明确推演今晚美股开盘重点观察哪些标的（如 `TSM`、`ASML`、`NVDA`、`SMH`）及关键验证位；同时仍须提示中期 20D 回撤、半日市流动性或宏观约束，做到**既锐利前瞻又不盲目追高**。
+   - **首屏聚焦当下最活跃增量**：`headline` 优先聚焦当前活跃时区最新发生的头号跨市场主变化（美股闭市时优先写亚太收盘/欧股开盘/美股期指/大宗商品/BTC 的最新共振或分歧，而非复读两天前的旧收盘价）；`plain_guide` 用三句话分别写清：1) 当前活跃盘面最新事实，2) 向美股下一交易窗口的传导推演，3) 下一步关键验证位与风控边界。
    - 每条 summary 按“新增事实；较上期变化；传导假设；反证/不确定性”组织。没有新增证据就明确写“本轮无新增证据”，不能把旧闻改写成新催化。
    - plain 解释为什么值得关注，不重复价格；watch_points 同时写验证条件和失效条件，不将价格涨跌直接等同于基本面逻辑证伪。
    - 每条主线附 reasoning，hypothesis / confirmation / invalidation / uncertainty 各一句，分别写传导假设、可观察确认条件、反证条件、证据缺口，每句尽量不超过 45 字，避免复述长文。来源时间是媒体发布时间，不能当作事件发生时间。
    - 换锚复核只是候选信号。锁定期沿用已接受锚定标的；开放窗口结合当前量价、估值及独立证据复核，若接受换锚，重新写齐该标的的逻辑、确认位与失效位，禁止继承旧锚价位。
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
    - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
-   - **代理指标与文风硬约束**：`compute`（AI 电力与新云基建动量）与 `semi_demand`（半导体与算力价格动量）的评分本质是 5 日价格动量公式，**严禁将其称为“基本面评分”或编造“价格与基本面背离”**；所有中文正文中**严禁泄露代码内部字段名**（如 `semi_demand`、`chain_id`）及漏写货币单位（统一写 `美元` 或 `$`，不得写 `元` 代替美元）；若 SEC 公告已附“L1正文摘录”，须直接引用摘录事实说明公告实质，而非一律写“正文未核验”。
+   - **代理指标与币种/文风硬约束**：`compute`（AI 电力与新云基建动量）与 `semi_demand`（半导体与算力价格动量）的评分本质是 5 日价格动量公式，**严禁将其称为“基本面评分”或编造“价格与基本面背离”**；所有中文正文中**严禁泄露代码内部字段名**（如 `semi_demand`、`chain_id`）；**严禁混淆币种**：美股/商品统一写 `美元` 或 `$`（不得写 `元` 代替美元），`2330.TW` 写 `新台币`，`000660.KS`/`005930.KS` 写 `韩元`，`ASML.AS` 写 `欧元`；若 SEC 公告已附“L1正文摘录”，须直接引用摘录事实说明公告实质，而非一律写“正文未核验”。
    - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；候补的 `plain` 与 `history_log` 必须与自身 `tier`（升级/跟踪/弱化淘汰）自洽，禁止“分级为弱化淘汰、备注写纳入升级候选”。
-   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。优先覆盖隔夜与亚欧关键宏观/央行/通胀/商品/半日市催化，按素材实际覆盖不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
+   - market_brief 输出独立的跨市场增量快报，通常 600–1200 字，证据少时缩短，不能为了字数编造。围绕最重要的 3–5 件事分段，每段写清事件/行情时间（含时区，缺失则注明）、数据与来源名称、较上期变化、关联 M/C 编号、传导假设与下一验证。优先覆盖亚太芯片与收盘共振、欧股与欧洲芯片/通胀、美股期指实时定价、商品/央行/政策催化，按素材实际覆盖不强行凑齐。区分新增事件、持续跟踪和待核验线索；没有上期对应证据时不得声称新增。报告生成时间不能当作行情或事件时间。不得凭价格走势声称机构抢筹，不得凭公告索引编写财务数字。
 5. **表达风格**：全部使用简体中文（代码/Ticker/术语保留英文），克制、锐利、去水词，中英文与数字之间保留单个半角空格（如 `NVDA 20D -30.68% 与 VIX 26.80 并存`），中文全角标点前后不加多余空格，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 

@@ -698,7 +698,11 @@ async def fetch_primary_signals(
     calendar_events = build_holiday_safe_calendar(ts_now, sec_filings)
 
     apac_eu_summary: dict[str, dict[str, Any]] = {}
-    for sym in ("^N225", "^KS11", "^TWII", "^HSI", "000001.SS", "^GDAXI", "^STOXX50E", "ASML"):
+    for sym in (
+        "^KS11", "^N225", "^TWII", "^HSI", "000001.SS",
+        "2330.TW", "000660.KS", "005930.KS",
+        "^GDAXI", "^STOXX50E", "ASML.AS", "ASML",
+    ):
         q = market.get_quote(sym)
         if q:
             apac_eu_summary[sym] = {
@@ -707,6 +711,7 @@ async def fetch_primary_signals(
                 "chg": q.chg,
                 "r5": q.r5,
                 "r20": q.r20,
+                "tsUtc": q.tsUtc,
             }
 
     return PrimarySignals(

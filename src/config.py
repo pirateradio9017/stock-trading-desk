@@ -92,17 +92,26 @@ CORE_SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec("LMT", "洛克希德·马丁", "equity_defense"),
 )
 
+US_FUTURES_SYMBOLS: tuple[SymbolSpec, ...] = (
+    SymbolSpec("ES=F", "标普500期货", "index_future", region="US"),
+    SymbolSpec("NQ=F", "纳指100期货", "index_future", region="US"),
+)
+
 APAC_SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec("^N225", "日经225", "index", region="APAC"),
     SymbolSpec("^KS11", "韩国 KOSPI", "index", region="APAC"),
     SymbolSpec("^TWII", "台湾加权", "index", region="APAC"),
     SymbolSpec("^HSI", "恒生指数", "index", region="APAC"),
     SymbolSpec("000001.SS", "上证指数", "index", region="APAC"),
+    SymbolSpec("2330.TW", "台积电台股(TWD)", "equity_apac_semi", region="APAC"),
+    SymbolSpec("000660.KS", "SK海力士(KRW)", "equity_apac_semi", region="APAC"),
+    SymbolSpec("005930.KS", "三星电子(KRW)", "equity_apac_semi", region="APAC"),
 )
 
 EU_SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec("^GDAXI", "德国 DAX", "index", region="EU"),
     SymbolSpec("^STOXX50E", "欧洲斯托克50", "index", region="EU"),
+    SymbolSpec("ASML.AS", "阿斯麦欧股(EUR)", "equity_eu_semi", region="EU"),
     SymbolSpec("ASML", "阿斯麦", "equity_semi", region="EU"),
 )
 
@@ -122,10 +131,13 @@ AUXILIARY_BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = (
 )
 
 CORE_SYMBOL_MAP: dict[str, SymbolSpec] = {s.sym: s for s in CORE_SYMBOLS}
-BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = APAC_SYMBOLS + EU_SYMBOLS + CREDIT_MACRO_SYMBOLS
+BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = (
+    US_FUTURES_SYMBOLS + APAC_SYMBOLS + EU_SYMBOLS + CREDIT_MACRO_SYMBOLS
+)
 ALL_SYMBOLS: tuple[SymbolSpec, ...] = (
     CORE_SYMBOLS + BENCHMARK_SYMBOLS + AUXILIARY_BENCHMARK_SYMBOLS
 )
+SYMBOL_SPEC_MAP: dict[str, SymbolSpec] = {s.sym: s for s in ALL_SYMBOLS}
 SYMBOL_NAME_MAP: dict[str, str] = {s.sym: s.name for s in ALL_SYMBOLS}
 
 CORR_ASSETS: tuple[tuple[str, str], ...] = (
@@ -223,14 +235,14 @@ FEED_SOURCES: dict[str, FeedSpec] = {
         key="wscn_us_stock",
         name="华尔街见闻美股快讯",
         tier="L1_WIRE_ZH",
-        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=us-stock-channel&limit=40",
+        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=us-stock-channel&limit=60",
         kind="json",
     ),
     "wscn_global": FeedSpec(
         key="wscn_global",
         name="华尔街见闻全球快讯",
         tier="L1_WIRE_ZH",
-        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=30",
+        url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=60",
         kind="json",
     ),
     "cnbc_markets": FeedSpec(
@@ -526,6 +538,7 @@ def format_utc_iso(dt: datetime | None = None) -> str:
 
 SCHEDULE_BASELINE_CRON = "13 */2 * * *"
 SCHEDULE_ACTIVE_ODD_CRON = "13 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
+SCHEDULE_CROSS_MARKET_CRON = "40 6,8 * * 1-5"
 SCHEDULE_REBALANCE_CRON = "32 13,16 * * 1-5"
 
 
@@ -567,6 +580,9 @@ def resolve_research_schedule(
 
     if sched == SCHEDULE_BASELINE_CRON:
         return ScheduleSlotDecision(True, False, session, window, "baseline_2h")
+
+    if sched == SCHEDULE_CROSS_MARKET_CRON:
+        return ScheduleSlotDecision(True, False, session, window, "cross_market_close_open")
 
     if sched == SCHEDULE_REBALANCE_CRON:
         if not is_us_trading_day(et.date()):

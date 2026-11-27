@@ -76,17 +76,25 @@ const LIVE_SYMBOLS = [
   ["GLD", "黄金 ETF"],
   ["TSM", "台积电"],
   ["LMT", "洛克希德·马丁"],
+  ["ES=F", "标普500期货"],
+  ["NQ=F", "纳指100期货"],
   ["^N225", "日经225"],
   ["^KS11", "韩国 KOSPI"],
   ["^TWII", "台湾加权"],
   ["^HSI", "恒生指数"],
   ["000001.SS", "上证指数"],
+  ["2330.TW", "台积电台股(TWD)"],
+  ["000660.KS", "SK海力士(KRW)"],
+  ["005930.KS", "三星电子(KRW)"],
   ["^GDAXI", "德国 DAX"],
   ["^STOXX50E", "欧洲斯托克50"],
+  ["ASML.AS", "阿斯麦欧股(EUR)"],
 ];
 
 // Ribbon, hero KPI, and primary anchor tickers run in the first fetch waves.
 const PRIORITY_LIVE_SYMBOLS = new Set([
+  "ES=F",
+  "NQ=F",
   "SPY",
   "QQQ",
   "^VIX",
@@ -97,6 +105,10 @@ const PRIORITY_LIVE_SYMBOLS = new Set([
   "NVDA",
   "AVGO",
   "TSM",
+  "2330.TW",
+  "ASML.AS",
+  "^KS11",
+  "^N225",
   "LMT",
   "XLE",
   "ITB",
@@ -856,23 +868,26 @@ function countChineseChars(s) {
   return m ? m.length : 0;
 }
 
-const US_RELEVANCE_RE = /(美股|纳指|标普|道指|华尔街|美联储|联储|鲍威尔|欧央行|日央行|植田|东京|美债|美元|日元|黄金|白银|原油|布伦特|英伟达|苹果|微软|谷歌|亚马逊|特斯拉|博通|台积电|洛克希德|光模块|半导体|芯片|算力|比特币|加密|关税|通胀|非农|降息|加息|高盛|摩根|财报|并购|科技股|军工|(?<![a-z0-9])(wti|opec|fed|fomc|ecb|boj|nvidia|nvda|meta|avgo|amd|tsm|asml|lmt|ai|btc|coinbase|mstr|cpi|pce|pmi|gdp|sec)(?![a-z0-9]))/i;
-const BOILERPLATE_TITLE_RE = /(^提醒[：:]\s*日内请重点关注|^华尔街见闻早餐|网络视听.*版权|行业自律公约|沪指|深成指|创业板指|北证50|两市成交额|A股三大股指|板块午后|涨停潮)/i;
+const US_RELEVANCE_RE = /(美股|纳指|标普|道指|华尔街|美股期货|纳指期货|标普期货|美联储|联储|鲍威尔|欧央行|日央行|植田|东京|美债|美元|日元|黄金|白银|原油|布伦特|英伟达|苹果|微软|谷歌|亚马逊|特斯拉|博通|台积电|海力士|三星电子|日经|台股|恒生科技|欧股|洛克希德|光模块|半导体|芯片|算力|比特币|加密|关税|出口管制|出口禁令|商务部|镓|锗|锑|301调查|通胀|非农|降息|加息|高盛|摩根|财报|并购|科技股|军工|(?<![a-z0-9])(wti|opec|fed|fomc|ecb|boj|nvidia|nvda|meta|avgo|amd|tsm|tsmc|asml|kospi|hbm|dram|lmt|ai|btc|coinbase|mstr|cpi|pce|pmi|gdp|sec)(?![a-z0-9]))/i;
+const BOILERPLATE_TITLE_RE = /(^提醒[：:]\s*日内请重点关注|^华尔街见闻早餐|网络视听.*版权|行业自律公约|沪指|深成指|创业板指|北证50|两市成交额|A股三大股指|板块午后|涨停潮|高考|作弊|相亲|婚恋|景区|赏秋|旅游客流|票房|春晚|明星|综艺|足球|篮球|奥运|世界杯|羽毛球|象鼻|夹爪|宠物|气象台|天气预报|地震台网|台风预警|客服回应)/i;
 const GLOBAL_OVERRIDE_RE = /(美股|纳指|标普|美联储|英伟达|台积电|苹果|特斯拉|比特币|原油|黄金|欧央行|日央行|东京|CPI|PCE|FOMC|OPEC)/i;
 
 function classifyNewsTag(text) {
   const t = String(text || "");
   if (/(比特币|以太坊|加密|(?<![a-z0-9])(bitcoin|btc|crypto|coinbase|mstr)(?![a-z0-9]))/i.test(t)) return "加密联动";
-  if (/(英伟达|博通|芯片|半导体|算力|台积电|光模块|(?<![a-z0-9])(nvidia|nvda|avgo|amd|gpu|ai|openai|tsm|asml|lumentum|hbm)(?![a-z0-9]))/i.test(t)) return "M1 算力";
+  if (/(英伟达|博通|芯片|半导体|算力|台积电|海力士|三星电子|晶圆|光刻机|光模块|存储芯片|恒生科技|(?<![a-z0-9])(nvidia|nvda|avgo|amd|gpu|ai|openai|tsm|tsmc|2330|asml|lumentum|hbm|dram|cowos)(?![a-z0-9]))/i.test(t)) return "M1 算力";
   if (/(原油|布伦特|炼油|裂解价差|霍尔木兹|天然气|黄金|白银|铜矿|铜价|大宗商品|(?<![a-z0-9])(wti|opec)(?![a-z0-9]))/i.test(t)) return "能源大宗";
   if (/(电力|核电|电网|数据中心|公用事业|燃气轮机|变电|(?<![a-z0-9])(iren|nebius|coreweave)(?![a-z0-9]))/i.test(t)) return "电力基建";
   if (/(美联储|鲍威尔|欧央行|日央行|植田|降息|加息|通胀|非农|美债|国债收益率|收益率|日元|美元指数|按揭利率|(?<![a-z0-9])(fed|fomc|ecb|boj|cpi|pce)(?![a-z0-9]))/i.test(t)) return "宏观利率";
-  if (/(反垄断|关税|制裁|出口管制|并购|裁决|听证会|军工|国防|(?<![a-z0-9])(sec|8-k|425)(?![a-z0-9]))/i.test(t)) return "并购监管";
-  if (/(日经|日本|东京|韩国|欧洲|欧元区|德国|英国|港股|恒生|亚太|新兴市场)/i.test(t)) return "全市场宏观";
+  if (/(反垄断|关税|制裁|出口管制|出口禁令|商务部|禁令|镓|锗|锑|稀土|301调查|并购|裁决|听证会|军工|国防|(?<![a-z0-9])(sec|8-k|425)(?![a-z0-9]))/i.test(t)) return "并购监管";
+  if (/(日经|东证|韩股|韩国股市|韩国央行|韩元|台股|台湾加权|欧股|欧洲股市|欧元区|德国dax|法国cac|英国富时|英国央行|港股|恒生|恒指|亚太股市|亚太|新兴市场|标普期货|纳指期货|美股期货|(?<![a-z0-9])kospi(?![a-z0-9]))/i.test(t)) return "全市场宏观";
   return "美股快讯";
 }
 
+const HARD_NOISE_TITLE_RE = /(个股掘金|概念热股|证券之星|\(NVDA\.US\)|-\s*Moomoo$|-\s*富途牛牛$|涨停[：:].*概念)/i;
+
 function isBoilerplateNoise(title) {
+  if (HARD_NOISE_TITLE_RE.test(title)) return true;
   return BOILERPLATE_TITLE_RE.test(title) && !GLOBAL_OVERRIDE_RE.test(title);
 }
 
@@ -910,8 +925,8 @@ async function fetchAndStoreNews(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
   }
 
   const [usItems, globalItems] = await Promise.all([
-    fetchWscnChannel("us-stock-channel", 40),
-    fetchWscnChannel("global-channel", 30),
+    fetchWscnChannel("us-stock-channel", 60),
+    fetchWscnChannel("global-channel", 60),
   ]);
 
   const seen = new Set();
@@ -1155,6 +1170,39 @@ function isPostCloseRebalanceDue(stateObj, now = new Date()) {
   return { due: true, forceRebalance: nowMin >= closeMin + 60 };
 }
 
+function isCrossMarketWindowDue(stateObj, now = new Date()) {
+  const nowMs = now.getTime();
+  const cn = new Date(nowMs + 8 * 3600_000);
+  const wd = cn.getUTCDay();
+  if (wd === 0 || wd === 6) return { due: false, reason: "" };
+  const cnMin = cn.getUTCHours() * 60 + cn.getUTCMinutes();
+  let winStartMin = null;
+  let winReason = "";
+  if (cnMin >= 14 * 60 + 35 && cnMin < 15 * 60 + 15) {
+    winStartMin = 14 * 60 + 35;
+    winReason = "cross_market_apac_close";
+  } else if (cnMin >= 16 * 60 + 5 && cnMin < 16 * 60 + 40) {
+    winStartMin = 16 * 60 + 5;
+    winReason = "cross_market_eu_open";
+  } else {
+    return { due: false, reason: "" };
+  }
+  const winStartUtcMs = Date.UTC(
+    cn.getUTCFullYear(),
+    cn.getUTCMonth(),
+    cn.getUTCDate(),
+    Math.floor(winStartMin / 60) - 8,
+    winStartMin % 60,
+    0
+  );
+  const ageMs = parseCnTimestampAgeMs(stateObj?.serverSyncedAt, nowMs);
+  const syncedMs = ageMs !== null && ageMs >= 0 ? nowMs - ageMs : null;
+  if (syncedMs === null || syncedMs < winStartUtcMs) {
+    return { due: true, reason: winReason };
+  }
+  return { due: false, reason: "" };
+}
+
 function evaluateResearchDispatch(stateObj, dispatchMeta, now = new Date()) {
   const nowMs = now.getTime();
   const stateAgeMs = parseCnTimestampAgeMs(stateObj?.serverSyncedAt, nowMs);
@@ -1171,6 +1219,16 @@ function evaluateResearchDispatch(stateObj, dispatchMeta, now = new Date()) {
       shouldDispatch: true,
       reason: rebal.forceRebalance ? "post_close_rebalance_catchup" : "post_close_rebalance",
       forceRebalance: rebal.forceRebalance,
+      stateAgeMin,
+    };
+  }
+
+  const crossMarket = isCrossMarketWindowDue(stateObj, now);
+  if (crossMarket.due) {
+    return {
+      shouldDispatch: true,
+      reason: crossMarket.reason,
+      forceRebalance: false,
       stateAgeMin,
     };
   }
