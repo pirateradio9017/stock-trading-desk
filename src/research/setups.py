@@ -172,11 +172,12 @@ def _setup(series: SymbolSeries, mainline_id: str, market: MarketSnapshot) -> Re
         lower_bound = round(min(recent_closes), precision)
         upper_bound = round(max(recent_closes), precision)
         if lower_bound < price < upper_bound:
-            if (price - lower_bound) < price * 0.04:
-                scenario_note = "现价紧贴近 20 日收盘低点（距下沿不足 4%），机械盈亏比易失真，先看企稳再评估。"
+            raw_ratio = (upper_bound - price) / (price - lower_bound)
+            if (price - lower_bound) < price * 0.015 or raw_ratio > 12.0:
+                scenario_note = "现价紧贴近 20 日收盘低点，机械盈亏比失真（>12:1），先看企稳再评估。"
             else:
                 low, upper = lower_bound, upper_bound
-                ratio = round((upper - price) / (price - low), 2)
+                ratio = round(raw_ratio, 2)
                 scenario_note = "区间上下沿为本期之前 20 个交易日收盘价最高与最低值。比值以当前价计算，未计费用和滑点。"
 
     tnx_q = market.get_quote("^TNX")

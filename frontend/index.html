@@ -1008,7 +1008,7 @@
             const isRaw = /[=^.-]/.test(sym);
             const showSym = isRaw ? (name || ASSET_CN[sym] || sym) : sym;
             const showName = isRaw || showSym === name ? "" : `<span class="muted">${esc(name)}</span>`;
-            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}${chg ? `<span class="pct ${cls}" style="background:none;padding:0;">${esc(preLbl + chg)}</span>` : ""}</span>`;
+            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}<span class="pct ${cls}" style="background:none;padding:0;${chg ? "" : "display:none;"}">${esc(chg ? preLbl + chg : "")}</span></span>`;
           }).join("");
 
           const anchor = m.anchor_sym || "";
@@ -1067,6 +1067,7 @@
           const eff = effectiveQuoteDisplay(qm[tag.getAttribute("data-sym")]);
           const pct = tag.querySelector(".pct");
           if (eff && pct) {
+            pct.style.display = "";
             pct.textContent = (eff.isPre ? "盘前 " : "") + fmtChg(eff.chg);
             pct.className = "pct " + chgCls(eff.chg);
           }
