@@ -213,7 +213,30 @@ class QuoteItem(_DeskModel):
     tsUtc: CleanTimestampStr
 
 
+class SessionPrint(_DeskModel):
+    sym: str
+    change: FiniteFloat
+    trade_utc: CleanTimestampStr
+
+
+class SessionTheme(_DeskModel):
+    name: str
+    change: FiniteFloat
+    excess: FiniteFloat
+    outperformers: int
+    members: list[SessionPrint]
+
+
+class SessionRotation(_DeskModel):
+    session: Literal["PRE_MARKET", "INTRADAY"]
+    sampled_utc: CleanTimestampStr
+    benchmark: SessionPrint | None
+    themes: list[SessionTheme]
+    universe: int
+
+
 class LiveResponse(_DeskModel):
+    session_rotation: SessionRotation | None = None
     updatedAt: SyncedTimestampStr
     updatedAtEt: EtTimestampStr
     marketSession: MarketSession
@@ -476,6 +499,7 @@ class ThemeComparison(_DeskModel):
 
 
 class StateResponse(_DeskModel):
+    session_rotation: SessionRotation | None = None
     theme_comparison: list[ThemeComparison] = Field(default_factory=list)
     serverSyncedAt: SyncedTimestampStr
     meta: MetaInfo

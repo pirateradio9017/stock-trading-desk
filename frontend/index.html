@@ -423,6 +423,13 @@
     .plot-key { display:flex; flex-wrap:wrap; gap:6px; }
     .plot-key button { color:var(--ink); font:600 .875rem var(--sans); background:white; border:1px solid var(--border); padding:6px 9px; border-radius:6px; cursor:pointer; }
     #setupPlot { min-width:0; }
+    #panel-candidates .sec-head > div { width:100%; min-width:0; }
+    .session-card { margin:.6rem 0 1rem; padding:.8rem 1rem; background:var(--sub); border-left:3px solid var(--sage); border-radius:6px; }
+    .session-card h3,.rotation-subhead { margin:.45rem 0; font-size:1rem; }
+    .session-card p { margin:.45rem 0; }
+    .session-card small { color:var(--muted); }
+    .session-card details { margin-top:.55rem; }
+    .session-card details p { border-top:1px solid var(--border); padding-top:.4rem; }
   </style>
 </head>
 <body>
@@ -513,6 +520,8 @@
           <div class="sec-head">
             <div>
               <h2 class="sec-title">板块轮动</h2>
+              <div id="sessionRotation"></div>
+              <h3 class="rotation-subhead">美股多日动量</h3>
               <p class="sec-sub" id="rotationNote"></p><p id="overseasWatch" class="overseas" hidden></p>
             </div>
           </div>
@@ -857,7 +866,7 @@
               <div class="blue-txt">${fmtHtml(meta.next_gate || "等待下一交易窗口验证")}</div>
             </div>
           </div>
-          ${STORE.state.rotation_note && STORE.state.candidates?.length ? `<button type="button" class="rotation-jump" id="rotationJump"><span>候补轮动 · ${esc(STORE.state.candidates[0].name)}</span><span>查看比较 ›</span></button>` : ""}
+          ${STORE.state.rotation_note && STORE.state.candidates?.length ? `<button type="button" class="rotation-jump" id="rotationJump"><span id="rotationLead">多日动量 · ${esc(STORE.state.candidates[0].name)}</span><span>查看比较 ›</span></button>` : ""}
           <div class="drawer-row">
             ${meta.stance || meta.self_review ? `<details class="quiet" data-drawer="audit"${auditOpen ? " open" : ""}>
               <summary>查看本轮六维自审与总控姿态</summary>
@@ -1292,7 +1301,42 @@
         }
       }
 
+      function renderSessionRotation() {
+        const box = document.getElementById("sessionRotation");
+        const lead = document.getElementById("rotationLead");
+        const historic = STORE.state?.candidates?.[0]?.name;
+        if (lead && historic) lead.textContent = "多日动量 · " + historic;
+        const samples = [STORE.state?.session_rotation, STORE.live?.session_rotation].filter(Boolean)
+          .sort((a,b) => Date.parse(b.sampled_utc) - Date.parse(a.sampled_utc));
+        const sig = samples[0];
+        const session = STORE.live?.marketSession;
+        const active = ["PRE_MARKET","INTRADAY"].includes(session);
+        const age = sig ? Date.now() - Date.parse(sig.sampled_utc) : Infinity;
+        if (!active || !sig || sig.session !== session || !(age >= 0 && age < 60*60000)) {
+          box.textContent = active ? "当场主题比较等候新一轮有效成交。" : "";
+          return;
+        }
+        const stage = session === "PRE_MARKET" ? "盘前" : "盘中";
+        const fmtTime = stamp => new Date(stamp).toLocaleTimeString("en-GB", {timeZone:"America/New_York",hour:"2-digit",minute:"2-digit"});
+        const top = sig.themes[0];
+        const coverage = `${sig.themes.length}/${sig.universe} 个主题可比 · ${fmtTime(sig.sampled_utc)} ET 采样`;
+        if (!top || sig.themes.length < 2) {
+          box.textContent = stage + "成交覆盖不足，暂缓比较。"+coverage;
+          return;
+        }
+        const label = top.excess > 0 && top.change > 0 ? stage+"领涨" : stage+"相对最强";
+        if (lead) lead.textContent = label + " · " + top.name;
+        const wasOpen = box.querySelector("details")?.open;
+        const rows = sig.themes.map(t => `<p><strong>${esc(t.name)}</strong>　${esc(fmtChg(t.change))} · 相对标普 ${t.excess > 0 ? "+" : ""}${esc(t.excess)} 个百分点<br><small>${t.members.map(p => `${esc(p.sym)} ${esc(fmtChg(p.change))}（${esc(fmtTime(p.trade_utc))} ET）`).join("、")}</small></p>`).join("");
+        box.innerHTML = `<div class="session-card"><h3>${esc(label)} · ${esc(top.name)}</h3>
+          <p>等权涨跌 ${esc(fmtChg(top.change))}，相对标普 ${top.excess > 0 ? "+" : ""}${esc(top.excess)} 个百分点。成分中 ${top.outperformers}/${top.members.length} 只跑赢。</p>
+          <small>${esc(coverage)}</small><details class="quiet"${wasOpen ? " open" : ""}><summary>比较当场成交与来源</summary>
+          <p>按篮子相对 SPY 的当场涨跌排序，全部成员须有采样前20分钟内成交，与基准的成交时间跨度最多10分钟。SPY ${esc(fmtChg(sig.benchmark.change))}（${esc(fmtTime(sig.benchmark.trade_utc))} ET）。</p>
+          ${rows}<a class="src-link" href="https://www.nasdaq.com/market-activity/etf/spy" target="_blank" rel="noopener noreferrer">Nasdaq 行情来源 ↗</a></details></div>`;
+      }
+
       function renderCandidates() {
+        renderSessionRotation();
         const all = STORE.state?.candidates || [];
         document.getElementById("rotationNote").textContent = STORE.state?.rotation_note || "上期研究候补";
         const comparison = document.getElementById("themeComparison");
@@ -1620,7 +1664,7 @@
           if (!Array.isArray(r.data?.quotes)) throw new Error("行情格式异常");
           STORE.live = r.data; STORE.liveSource = "network"; STORE.liveErr = "";
           saveCache(); renderQuoteRibbon();
-          if (STORE.state) { patchHeroKpis(); patchMainlinesLive(); }
+          if (STORE.state) { patchHeroKpis(); patchMainlinesLive(); renderSessionRotation(); }
         } catch (e) {
           STORE.liveErr = "行情同步失败";
           renderQuoteRibbon();

@@ -7,17 +7,8 @@ from statistics import mean
 from src.config import SYMBOL_NAME_MAP, TZ_ET, is_us_trading_day
 from src.models.schemas import CandidateItem
 
-THEMES = {
-    "晶圆制造与半导体设备": ("TSM", "ASML"),
-    "光模块与高速互联": ("COHR", "LITE"),
-    "芯片设计与计算": ("AMD", "NVDA", "AVGO"),
-    "住宅建筑与开发": ("ITB", "XHB"),
-    "银行与金融": ("XLF", "KBE"),
-    "能源与油气生产": ("XLE", "XOP"),
-    "云算力基础设施": ("NBIS", "CRWV", "IREN"),
-    "数字资产相关股票": ("COIN", "MSTR"),
-    "公用事业与发电": ("XLU", "VST"),
-}
+from src.config import ROTATION_THEMES as THEMES
+
 RULE = "以标普500 ETF 为基准。1日、5日超额均为正，5日涨幅为正且过半成员5日跑赢，列入晋升观察；1日、5日超额均为负且5日下跌，列入转弱。"
 LABELS = {"upgrade": ("晋升观察", "sage"), "watch": ("继续观察", "ochre"), "demote": ("转弱观察", "slate")}
 

@@ -95,6 +95,7 @@ async def run_research_cycle(
         update={
             "candidates": candidates,
             "rotation_note": note,
+            "session_rotation": bundle.market.live.session_rotation,
             "theme_comparison": [ThemeComparison(name=r["name"], members=list(r["members"]), as_of=r["as_of"],
                                                  r5=r["r5"], r20=r["r20"], excess5=r["rs5"]) for r in ranks],
             "overseas_watch": overseas_watch(bundle.market),

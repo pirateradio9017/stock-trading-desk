@@ -32,6 +32,7 @@ from src.config import (
     format_utc_iso,
     get_market_session,
 )
+from src.ingestion.session_rotation import fetch_session_rotation
 from src.models.schemas import (
     LinkageTrend,
     LinkageTrendSeries,
@@ -648,6 +649,7 @@ async def fetch_market_snapshot(
         limits=limits,
         follow_redirects=True,
     ) as client:
+        session_task = asyncio.create_task(fetch_session_rotation(ts_now, market_session))
         valuations_task = asyncio.create_task(_fetch_equity_valuations(client, ts_now.astimezone(TZ_ET).date()))
         screener_task = asyncio.create_task(_fetch_screeners(client)) if include_screener else None
         tasks = [
@@ -663,6 +665,7 @@ async def fetch_market_snapshot(
             for spec in ALL_SYMBOLS
         ]
         results = await asyncio.gather(*tasks)
+        session_rotation = await session_task
 
         movers: list[ScreenerMover] = []
         if screener_task is not None:
@@ -700,6 +703,7 @@ async def fetch_market_snapshot(
             )
 
     live = LiveResponse(
+        session_rotation=session_rotation,
         updatedAt=format_cn_timestamp(ts_now),
         updatedAtEt=format_et_short(ts_now),
         marketSession=market_session,

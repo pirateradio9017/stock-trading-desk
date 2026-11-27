@@ -244,6 +244,12 @@ def _collect_context_urls(bundle: IngestionBundle) -> list[tuple[str, str]]:
             seen.add(u)
             items.append((label, u))
 
+    signal = bundle.market.live.session_rotation
+    if signal:
+        for theme in signal.themes[:3]:
+            for trade in theme.members:
+                kind = "etf" if "etf" in SYMBOL_SPEC_MAP[trade.sym].category else "stocks"
+                _add(f"Nasdaq {trade.sym} 当场报价", f"https://www.nasdaq.com/market-activity/{kind}/{trade.sym.lower()}")
     for f in bundle.primary.sec_filings[:8]:
         _add(f"SEC {f.sym} {f.form} ({f.filing_date})", f.url)
     for m in bundle.primary.macro_proxies:
@@ -287,6 +293,15 @@ def build_research_context(
         f"跨时区实盘提醒: {cross_tz_note}",
     ]
 
+    signal = market.live.session_rotation
+    if signal:
+        lines.append(f"纳斯达克当场成交：{signal.session}，相对上个美股收盘；有效篮子 {len(signal.themes)}/{signal.universe}。")
+        for theme in signal.themes:
+            trades = "、".join(f"{p.sym} {p.change:+.2f}% @ {p.trade_utc}" for p in theme.members)
+            lines.append(f"{theme.name} 等权 {theme.change:+.2f}%，相对 SPY {theme.excess:+.2f} 个百分点；{trades}")
+        if signal.benchmark:
+            lines.append(f"基准 SPY {signal.benchmark.change:+.2f}% @ {signal.benchmark.trade_utc}")
+        lines.append("这些逐笔来源的最新成交优先于日线栏中的昨收。把当场领先主题和上一交易日动量榜首交叉核对，区分短线修复与持续轮动；盘前成交不能写成正式开盘确认。无覆盖的主题不得推断涨跌。")
     ranks = ranked_baskets(market)
     if ranks:
         lines.append("本轮美股主题等权篮子，按相对标普动量排序。开放窗口逐一复核领先主题能否替代旧主线；盘前另述亚欧领先证据、对应主题和美国现货确认条件。")

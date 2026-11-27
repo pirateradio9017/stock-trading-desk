@@ -130,6 +130,18 @@ AUXILIARY_BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec("GLD", "黄金 ETF", "commodity_etf", region="US"),
 )
 
+ROTATION_THEMES = {
+    "晶圆制造与半导体设备": ("TSM", "ASML"),
+    "光模块与高速互联": ("COHR", "LITE"),
+    "芯片设计与计算": ("AMD", "NVDA", "AVGO"),
+    "住宅建筑与开发": ("ITB", "XHB"),
+    "银行与金融": ("XLF", "KBE"),
+    "能源与油气生产": ("XLE", "XOP"),
+    "云算力基础设施": ("NBIS", "CRWV", "IREN"),
+    "数字资产相关股票": ("COIN", "MSTR"),
+    "公用事业与发电": ("XLU", "VST"),
+}
+
 CORE_SYMBOL_MAP: dict[str, SymbolSpec] = {s.sym: s for s in CORE_SYMBOLS}
 BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = (
     US_FUTURES_SYMBOLS + APAC_SYMBOLS + EU_SYMBOLS + CREDIT_MACRO_SYMBOLS
@@ -583,6 +595,9 @@ def resolve_research_schedule(
 
     if event_name == "workflow_dispatch":
         return ScheduleSlotDecision(True, False, session, window, "workflow_dispatch")
+
+    if sched in {"43 4-8,10-15 * * 1-5", "38 9 * * 1-5"}:
+        return ScheduleSlotDecision(session in {"PRE_MARKET", "INTRADAY"}, False, session, window, "session_rotation")
 
     if sched == SCHEDULE_BASELINE_CRON:
         return ScheduleSlotDecision(True, False, session, window, "baseline_2h")

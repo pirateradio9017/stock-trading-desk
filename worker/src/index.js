@@ -770,6 +770,7 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     updatedAt: formatCnTimestamp(now),
     updatedAtEt,
     marketSession,
+    session_rotation: cached?.session_rotation?.session === marketSession ? cached.session_rotation : null,
     count: quotes.length,
     quotes,
   };
