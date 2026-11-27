@@ -424,12 +424,26 @@
     .plot-key button { color:var(--ink); font:600 .875rem var(--sans); background:white; border:1px solid var(--border); padding:6px 9px; border-radius:6px; cursor:pointer; }
     #setupPlot { min-width:0; }
     #panel-candidates .sec-head > div { width:100%; min-width:0; }
-    .session-card { margin:.6rem 0 1rem; padding:.8rem 1rem; background:var(--sub); border-left:3px solid var(--sage); border-radius:6px; }
-    .session-card h3,.rotation-subhead { margin:.45rem 0; font-size:1rem; }
-    .session-card p { margin:.45rem 0; }
+    .session-card { margin:.6rem 0 1rem; padding:.85rem 1rem; background:var(--sub); border-left:3px solid var(--sage); border-radius:8px; }
+    .session-card h3,.rotation-subhead { margin:.4rem 0; font-size:1rem; }
+    .session-card p { margin:.4rem 0; }
     .session-card small { color:var(--muted); }
-    .session-card details { margin-top:.55rem; }
+    .session-card details { margin-top:.6rem; }
     .session-card details p { border-top:1px solid var(--border); padding-top:.4rem; }
+    .session-rank-list { display:grid; gap:6px; margin:.65rem 0 .5rem; }
+    .session-rank-row {
+      display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:4px 10px;
+      padding:6px 10px; border-radius:8px; background:var(--card); border:1px solid var(--border); font-size:13px;
+    }
+    .session-rank-row.is-top { border-color:#C7D8D0; background:#F4F8F6; }
+    .session-rank-name { display:inline-flex; align-items:baseline; gap:6px; min-width:0; }
+    .session-rank-idx { font:700 11.5px var(--mono); color:var(--muted); }
+    .session-rank-syms { font:500 11.5px var(--mono); color:var(--muted); }
+    .session-rank-vals { display:inline-flex; align-items:baseline; gap:8px; font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
+    .pre-tag {
+      font-size:10px; font-weight:700; color:var(--ochre); background:var(--ochre-bg);
+      padding:1px 5px; border-radius:4px; letter-spacing:.02em;
+    }
   </style>
 </head>
 <body>
@@ -908,6 +922,17 @@
         });
       }
 
+      function effectiveQuoteDisplay(q) {
+        if (!q) return null;
+        const isPre = STORE.live?.marketSession === "PRE_MARKET";
+        const ahP = numOrNull(q.ahPrice);
+        const ahC = numOrNull(q.ahChg);
+        if (isPre && ahP !== null && ahC !== null) {
+          return { price: ahP, chg: ahC, isPre: true };
+        }
+        return { price: q.price, chg: q.chg, isPre: false };
+      }
+
       /* Ticker Strip */
       function renderQuoteRibbon() {
         const el = document.getElementById("quoteRibbon");
@@ -917,19 +942,21 @@
           : (STORE.liveBusy ? "同步中..." : "等待行情");
         const qm = quoteMap();
         const syms = [...new Set([
-          "NQ=F", "ES=F", "NVDA", "TSM", "AVGO", "ASML", "BTC-USD", "GC=F", "BZ=F",
+          "NQ=F", "ES=F", "NVDA", "TSM", "AVGO", "ASML", "LITE", "BTC-USD", "GC=F", "BZ=F",
           ...(STORE.state?.mainlines || []).map(m => m.anchor_sym), "TLT", "XLE", "ITB", "LMT"
-        ])].filter(s => qm[s] && numOrNull(qm[s].price) !== null).slice(0, 12);
+        ])].filter(s => qm[s] && numOrNull(qm[s].price) !== null).slice(0, 13);
         if (!syms.length) {
           el.innerHTML = `<div class="empty-box" style="width:100%;">${STORE.liveBusy ? "正在同步实时行情..." : "暂无实时行情"}</div>`;
           return;
         }
         el.innerHTML = syms.map(sym => {
           const q = qm[sym];
+          const eff = effectiveQuoteDisplay(q);
           const isRaw = /[=^.-]/.test(sym);
           const lbl = isRaw ? (ASSET_CN[sym] || q.name || sym) : sym;
           const sub = !isRaw && ASSET_CN[sym] ? `<span class="muted" style="font-size:11px;">${esc(ASSET_CN[sym])}</span>` : "";
-          return `<div class="ticker-item"><strong>${esc(lbl)}</strong>${sub}<span class="px">${esc(fmtPrice(sym, q.price))}</span><span class="pct ${chgCls(q.chg)}">${esc(fmtChg(q.chg))}</span></div>`;
+          const preBadge = eff.isPre ? `<span class="pre-tag">盘前</span>` : "";
+          return `<div class="ticker-item"><strong>${esc(lbl)}</strong>${sub}${preBadge}<span class="px">${esc(fmtPrice(sym, eff.price))}</span><span class="pct ${chgCls(eff.chg)}">${esc(fmtChg(eff.chg))}</span></div>`;
         }).join("");
       }
 
@@ -974,18 +1001,19 @@
 
           const pairs = parseStocks(m.stocks);
           const tagsHtml = pairs.map(({ sym, name }) => {
-            const q = qm[sym];
-            const chg = q ? fmtChg(q.chg) : "";
-            const cls = q ? chgCls(q.chg) : "chg-flat";
+            const eff = effectiveQuoteDisplay(qm[sym]);
+            const chg = eff ? fmtChg(eff.chg) : "";
+            const cls = eff ? chgCls(eff.chg) : "chg-flat";
+            const preLbl = eff?.isPre ? "盘前 " : "";
             const isRaw = /[=^.-]/.test(sym);
             const showSym = isRaw ? (name || ASSET_CN[sym] || sym) : sym;
             const showName = isRaw || showSym === name ? "" : `<span class="muted">${esc(name)}</span>`;
-            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}${chg ? `<span class="pct ${cls}" style="background:none;padding:0;">${esc(chg)}</span>` : ""}</span>`;
+            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}${chg ? `<span class="pct ${cls}" style="background:none;padding:0;">${esc(preLbl + chg)}</span>` : ""}</span>`;
           }).join("");
 
           const anchor = m.anchor_sym || "";
-          const qa = qm[anchor];
-          const curPx = qa ? fmtPrice(anchor, qa.price) : "--";
+          const effA = effectiveQuoteDisplay(qm[anchor]);
+          const curPx = effA ? (effA.isPre ? "盘前 " : "") + fmtPrice(anchor, effA.price) : "--";
           const anchorLabel = /[=^.-]/.test(anchor) ? (ASSET_CN[anchor] || anchor) : anchor;
           const src = safeUrl(m.source_url);
           const r = m.reasoning;
@@ -1036,14 +1064,18 @@
       function patchMainlinesLive() {
         const qm = quoteMap();
         document.querySelectorAll(".stock-tag[data-sym]").forEach(tag => {
-          const q = qm[tag.getAttribute("data-sym")];
+          const eff = effectiveQuoteDisplay(qm[tag.getAttribute("data-sym")]);
           const pct = tag.querySelector(".pct");
-          if (q && pct) { pct.textContent = fmtChg(q.chg); pct.className = "pct " + chgCls(q.chg); }
+          if (eff && pct) {
+            pct.textContent = (eff.isPre ? "盘前 " : "") + fmtChg(eff.chg);
+            pct.className = "pct " + chgCls(eff.chg);
+          }
         });
         document.querySelectorAll(".m-anchor[data-anchor]").forEach(el => {
           const sym = el.getAttribute("data-anchor");
           const px = el.querySelector(".anchor-px");
-          if (px && qm[sym]) px.textContent = fmtPrice(sym, qm[sym].price);
+          const eff = effectiveQuoteDisplay(qm[sym]);
+          if (px && eff) px.textContent = (eff.isPre ? "盘前 " : "") + fmtPrice(sym, eff.price);
         });
       }
 
@@ -1325,13 +1357,26 @@
           return;
         }
         const label = top.excess > 0 && top.change > 0 ? stage+"领涨" : stage+"相对最强";
-        if (lead) lead.textContent = label + " · " + top.name;
+        if (lead) lead.textContent = `${label} · ${top.name}（${fmtChg(top.change)}）`;
         const wasOpen = box.querySelector("details")?.open;
-        const rows = sig.themes.map(t => `<p><strong>${esc(t.name)}</strong>　${esc(fmtChg(t.change))} · 相对标普 ${t.excess > 0 ? "+" : ""}${esc(t.excess)} 个百分点<br><small>${t.members.map(p => `${esc(p.sym)} ${esc(fmtChg(p.change))}（${esc(fmtTime(p.trade_utc))} ET）`).join("、")}</small></p>`).join("");
+        const board = sig.themes.slice(0, 5).map((t, idx) => `
+          <div class="session-rank-row${idx === 0 ? " is-top" : ""}">
+            <span class="session-rank-name">
+              <span class="session-rank-idx">#${idx + 1}</span>
+              <strong>${esc(t.name)}</strong>
+              <span class="session-rank-syms">${esc(t.members.map(p => p.sym).join("/"))}</span>
+            </span>
+            <span class="session-rank-vals">
+              <span class="${chgCls(t.change)}">${esc(fmtChg(t.change))}</span>
+              <span class="muted">相对标普 ${t.excess > 0 ? "+" : ""}${esc(Number(t.excess).toFixed(2))}pp</span>
+            </span>
+          </div>`).join("");
+        const rows = sig.themes.map(t => `<p><strong>${esc(t.name)}</strong>　${esc(fmtChg(t.change))} · 相对标普 ${t.excess > 0 ? "+" : ""}${esc(t.excess)} 个百分点<br><small>${t.members.map(p => `${esc(p.sym)}${numOrNull(p.price) !== null ? " $" + Number(p.price).toFixed(2) : ""} ${esc(fmtChg(p.change))}（${esc(fmtTime(p.trade_utc))} ET）`).join("、")}</small></p>`).join("");
         box.innerHTML = `<div class="session-card"><h3>${esc(label)} · ${esc(top.name)}</h3>
-          <p>等权涨跌 ${esc(fmtChg(top.change))}，相对标普 ${top.excess > 0 ? "+" : ""}${esc(top.excess)} 个百分点。成分中 ${top.outperformers}/${top.members.length} 只跑赢。</p>
-          <small>${esc(coverage)}</small><details class="quiet"${wasOpen ? " open" : ""}><summary>比较当场成交与来源</summary>
-          <p>按篮子相对 SPY 的当场涨跌排序，全部成员须有采样前20分钟内成交，与基准的成交时间跨度最多10分钟。SPY ${esc(fmtChg(sig.benchmark.change))}（${esc(fmtTime(sig.benchmark.trade_utc))} ET）。</p>
+          <p>等权涨跌 ${esc(fmtChg(top.change))}，相对标普 ${top.excess > 0 ? "+" : ""}${esc(top.excess)} 个百分点。成分中 ${top.outperformers}/${top.members.length} 只跑赢（SPY ${esc(fmtChg(sig.benchmark.change))}）。</p>
+          <div class="session-rank-list">${board}</div>
+          <small>${esc(coverage)}</small><details class="quiet"${wasOpen ? " open" : ""}><summary>查看全部当场逐笔成交与口径</summary>
+          <p>按篮子相对 SPY 的当场涨跌排序，全部成员须有采样前 20 分钟内成交，与基准的成交时间跨度最多 10 分钟。SPY ${esc(fmtChg(sig.benchmark.change))}（${esc(fmtTime(sig.benchmark.trade_utc))} ET）。</p>
           ${rows}<a class="src-link" href="https://www.nasdaq.com/market-activity/etf/spy" target="_blank" rel="noopener noreferrer">Nasdaq 行情来源 ↗</a></details></div>`;
       }
 

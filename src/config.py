@@ -316,14 +316,14 @@ FEED_SOURCES: dict[str, FeedSpec] = {
         key="google_news_us",
         name="Google News US Markets",
         tier="L2_WIRE_EN",
-        url="https://news.google.com/rss/search?q=US+stock+market+OR+Federal+Reserve+OR+semiconductor&hl=en-US&gl=US&ceid=US:en",
+        url="https://news.google.com/rss/search?q=US+stock+market+OR+Federal+Reserve+OR+semiconductor+OR+optical+networking+OR+OPEC+oil+OR+export+controls&hl=en-US&gl=US&ceid=US:en",
         kind="rss",
     ),
     "google_news_zh": FeedSpec(
         key="google_news_zh",
         name="Google News 中文美股",
         tier="L2_WIRE_ZH",
-        url="https://news.google.com/rss/search?q=%E7%BE%8E%E8%82%A1+OR+%E8%8B%B1%E4%BC%9F%E8%BE%BE+OR+%E7%BE%8E%E8%81%94%E5%82%A8&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+        url="https://news.google.com/rss/search?q=%E7%BE%8E%E8%82%A1+OR+%E8%8B%B1%E4%BC%9F%E8%BE%BE+OR+%E5%8F%B0%E7%A7%AF%E7%94%B5+OR+%E5%85%89%E6%A8%A1%E5%9D%97+OR+%E7%BE%8E%E8%81%94%E5%82%A8&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
         kind="rss",
     ),
     "finviz_news": FeedSpec(

@@ -67,16 +67,63 @@ def _recent_market_date(day: str, market_date: date) -> bool:
     return (market_date - timedelta(days=7)).isoformat() <= day <= market_date.isoformat()
 
 
+_OVERSEAS_PEER_MAP: dict[str, tuple[str, str]] = {
+    "TSM": ("2330.TW", "台积电台股"),
+    "ASML": ("ASML.AS", "阿斯麦欧股"),
+    "NVDA": ("000660.KS", "SK海力士"),
+}
+
+
+def _session_print_map(market: MarketSnapshot) -> dict[str, tuple[float, str]]:
+    rot = market.live.session_rotation
+    if rot is None:
+        return {}
+    out: dict[str, tuple[float, str]] = {}
+    if rot.benchmark is not None:
+        out[rot.benchmark.sym.upper()] = (rot.benchmark.change, rot.session)
+    for theme in rot.themes:
+        for member in theme.members:
+            out[member.sym.upper()] = (member.change, rot.session)
+    return out
+
+
 def _watch_category(
-    series: SymbolSeries, drawdown: float | None, r5: float | None, r20: float | None,
+    series: SymbolSeries,
+    drawdown: float | None,
+    r5: float | None,
+    r20: float | None,
+    *,
+    forward_pe: float | None = None,
+    pe_discount_pct: float | None = None,
+    reward_risk: float | None = None,
+    tnx_yield: float | None = None,
 ) -> tuple[str, str]:
-    if r5 is not None and r20 is not None and r5 <= -5 and r20 <= -15:
-        return "avoid", "5 日和 20 日均显著走弱，观察短期跌势是否延续。"
-    if series.spec.category in _HIGH_RISK_CATEGORIES:
+    sym = series.spec.sym
+    is_high_risk = series.spec.category in _HIGH_RISK_CATEGORIES
+    has_quality_val_cushion = (
+        not is_high_risk
+        and drawdown is not None
+        and drawdown >= 25
+        and forward_pe is not None
+        and 4.0 <= forward_pe <= 40.0
+        and pe_discount_pct is not None
+        and pe_discount_pct >= 20.0
+    )
+    if is_high_risk:
+        if r5 is not None and r20 is not None and r5 <= -5 and r20 <= -15:
+            return "avoid", "高波动板块 5 日与 20 日均深度走弱，缺乏稳健估值安全垫，严控风险。"
         return "spec", "所属板块对融资条件或加密波动较敏感，关注回撤和短期动量。"
+    if has_quality_val_cushion:
+        if r5 is not None and r20 is not None and r5 <= -5 and r20 <= -15:
+            return "dip", f"距 52 周高点回撤 {drawdown:.1f}%，远期 PE {forward_pe:.1f}x（较历史中位折价 {pe_discount_pct:.0f}%）；美股多日仍弱，盯现货放量止跌。"
+        return "dip", f"距 52 周高点回撤 {drawdown:.1f}%，远期 PE {forward_pe:.1f}x（较历史中位折价 {pe_discount_pct:.0f}%），具备估值安全垫，观察承接。"
+    if r5 is not None and r20 is not None and r5 <= -5 and r20 <= -15:
+        return "avoid", "5 日和 20 日均显著走弱，且暂缺充分估值折价保护，观察短期跌势是否延续。"
+    if sym in {"ITB", "XHB"} and tnx_yield is not None and tnx_yield >= 4.5 and reward_risk is not None and reward_risk < 0.5:
+        return "avoid", f"逼近近 20 日区间上沿（盈亏比仅 {reward_risk:.1f}:1），且 10Y 美债 {tnx_yield:.2f}% 高位压制按揭需求，不宜追高。"
     if drawdown is not None and drawdown >= 25:
         return "dip", "距 52 周高点已回撤至少 25%，观察动量能否企稳及估值比较是否支持。"
-    if series.spec.sym in _DEFENSIVE_REFERENCES:
+    if sym in _DEFENSIVE_REFERENCES:
         return "hedge", "作为防御或行业对照，跟踪它在大盘走弱时的相对表现。"
     return "watch", "跟踪主线内相对强弱和观察价位。"
 
@@ -91,9 +138,10 @@ def _setup(series: SymbolSeries, mainline_id: str, market: MarketSnapshot) -> Re
     price = q.price if q and has_price else None
     high = series.high_52w if has_price else None
     drawdown = round(100 * (1 - price / high), 2) if price and high and price <= high else None
-    category, summary = _watch_category(series, drawdown, q.r5 if has_price else None, q.r20 if has_price else None)
 
     fund_data = market.valuations.get(sym)
+    forward_pe: float | None = None
+    discount: float | None = None
     if fund_data is not None:
         forward_pe = fund_data.forward_pe
         count = len(fund_data.historical_forward_pe)
@@ -124,9 +172,42 @@ def _setup(series: SymbolSeries, mainline_id: str, market: MarketSnapshot) -> Re
         lower_bound = round(min(recent_closes), precision)
         upper_bound = round(max(recent_closes), precision)
         if lower_bound < price < upper_bound:
-            low, upper = lower_bound, upper_bound
-            ratio = round((upper - price) / (price - low), 2)
-            scenario_note = "区间上下沿为本期之前 20 个交易日收盘价最高与最低值。比值以当前价计算，未计费用和滑点。"
+            if (price - lower_bound) < price * 0.04:
+                scenario_note = "现价紧贴近 20 日收盘低点（距下沿不足 4%），机械盈亏比易失真，先看企稳再评估。"
+            else:
+                low, upper = lower_bound, upper_bound
+                ratio = round((upper - price) / (price - low), 2)
+                scenario_note = "区间上下沿为本期之前 20 个交易日收盘价最高与最低值。比值以当前价计算，未计费用和滑点。"
+
+    tnx_q = market.get_quote("^TNX")
+    tnx_yield = tnx_q.price if (tnx_q and tnx_q.price is not None) else None
+    category, summary = _watch_category(
+        series,
+        drawdown,
+        q.r5 if has_price else None,
+        q.r20 if has_price else None,
+        forward_pe=forward_pe,
+        pe_discount_pct=discount,
+        reward_risk=ratio,
+        tnx_yield=tnx_yield,
+    )
+
+    if has_price:
+        cues: list[str] = []
+        session_prints = _session_print_map(market)
+        if sym in session_prints:
+            sp_chg, sp_sess = session_prints[sym]
+            stage = "盘前" if sp_sess == "PRE_MARKET" else "盘中"
+            cues.append(f"{stage} {sp_chg:+.2f}%")
+        elif q and q.ahChg is not None and market.live.marketSession == "PRE_MARKET":
+            cues.append(f"盘前 {q.ahChg:+.2f}%")
+        peer = _OVERSEAS_PEER_MAP.get(sym)
+        if peer and market.live.marketSession in ("PRE_MARKET", "OFF_HOURS", "HOLIDAY"):
+            pq = market.get_quote(peer[0])
+            if pq and pq.chg is not None and pq.tsUtc[:10] == market.fetched_at_utc.date().isoformat():
+                cues.append(f"{peer[1]} {pq.chg:+.2f}%")
+        if cues:
+            summary = f"{summary.rstrip('。')}；最新映射：{'、'.join(cues)}。"
 
     return ResearchSetup(
         symbol=sym,
@@ -235,7 +316,18 @@ def build_anchor_reviews(
             ]
             anchor_r5, alternative_r5 = returns[-1]
             weak_anchor = anchor_r5 < 0 or (0 < line.flip < line.accel and anchor_closes[anchor_days[-1]] <= line.flip)
-            if not weak_anchor or not all(right - left >= 3 for left, right in returns) or alternative_r5 <= 0:
+            alt_val = market.valuations.get(symbol)
+            alt_has_cushion = bool(
+                alt_val and alt_val.forward_pe and len(alt_val.historical_forward_pe) >= 3
+                and alt_val.forward_pe <= median(alt_val.historical_forward_pe) * 0.85
+            )
+            alt_better_20d = (
+                alternative.quote is not None and anchor.quote is not None
+                and alternative.quote.r20 is not None and anchor.quote.r20 is not None
+                and alternative.quote.r20 > anchor.quote.r20 + 5.0
+            )
+            sustained_lead = all(right - left >= 3 for left, right in returns)
+            if not weak_anchor or not sustained_lead or (alternative_r5 <= 0 and not (alt_has_cushion and alt_better_20d)):
                 continue
             if best is None or alternative_r5 > best.candidate_r5:
                 best = AnchorReview(

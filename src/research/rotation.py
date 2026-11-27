@@ -63,8 +63,20 @@ def ranked_baskets(market):
     return sorted(rows, key=lambda row: (-row["score"], row["name"]))
 
 
-def rotation_candidates(rows, mainlines, previous, today):
+def rotation_candidates(rows, mainlines, previous, today, *, market=None):
     old = {c.name: c for c in previous}
+    session_by_name = {}
+    session_stage = ""
+    tnx_price = None
+    if market is not None:
+        sig = getattr(getattr(market, "live", None), "session_rotation", None)
+        if sig and sig.themes:
+            session_stage = "盘前" if sig.session == "PRE_MARKET" else "盘中"
+            session_by_name = {t.name: t for t in sig.themes}
+        tnx_q = market.get_quote("^TNX") if hasattr(market, "get_quote") else None
+        if tnx_q and tnx_q.price is not None:
+            tnx_price = tnx_q.price
+
     result = []
     for i, row in enumerate(rows[:6], 1):
         members = row["members"]
@@ -73,10 +85,16 @@ def rotation_candidates(rows, mainlines, previous, today):
         label, tone = LABELS[row["tier"]]
         prior = old.get(row["name"])
         transition = f"{prior.tier_label} → {label}" if prior and prior.tier != row["tier"] else label
+        plain = row["plain"]
+        live_theme = session_by_name.get(row["name"])
+        if live_theme is not None:
+            plain += f" 今日{session_stage}等权 {live_theme.change:+.2f}%（相对标普 {live_theme.excess:+.2f} 个百分点）。"
+        elif row["name"] == "住宅建筑与开发" and tnx_price is not None and tnx_price >= 4.5:
+            plain += f" 注：10Y 美债仍处 {tnx_price:.2f}% 高位，利率敏感板块需防追高。"
         result.append(CandidateItem(id=f"C{i}", tier=row["tier"], tier_label=label, tone=tone,
             name=row["name"], stocks=", ".join(f"{s}:{SYMBOL_NAME_MAP[s]}" for s in members),
             linked_to=linked if overlap else "独立观察", first_seen=prior.first_seen if prior else today,
-            r5=row["r5"], r20=row["r20"], plain=row["plain"], rule=RULE,
+            r5=row["r5"], r20=row["r20"], plain=plain, rule=RULE,
             as_of=row["as_of"], excess5=row["rs5"], history_log=f"{row['as_of']} · {transition}"))
     return result
 

@@ -34,6 +34,31 @@ const WORKER_CONFIG = {
   GITHUB_REPO: "pirateradio9017/stock-trading-desk",
   GITHUB_WORKFLOW: "pipeline.yml",
   GITHUB_REF: "main",
+  NASDAQ_TIMEOUT_MS: 2200,
+  NASDAQ_BUDGET_MS: 3000,
+  NASDAQ_CONCURRENCY: 6,
+  SESSION_ROTATION_FRESH_MS: 3 * 60_000,
+};
+
+const ROTATION_THEMES_EDGE = [
+  ["晶圆制造与半导体设备", ["TSM", "ASML"]],
+  ["光模块与高速互联", ["COHR", "LITE"]],
+  ["芯片设计与计算", ["AMD", "NVDA", "AVGO"]],
+  ["住宅建筑与开发", ["ITB", "XHB"]],
+  ["银行与金融", ["XLF", "KBE"]],
+  ["能源与油气生产", ["XLE", "XOP"]],
+  ["云算力基础设施", ["NBIS", "CRWV", "IREN"]],
+  ["数字资产相关股票", ["COIN", "MSTR"]],
+  ["公用事业与发电", ["XLU", "VST"]],
+];
+
+const ROTATION_ETF_SYMS = new Set(["SPY", "ITB", "XHB", "XLF", "KBE", "XLE", "XOP", "XLU"]);
+const ROTATION_SYMBOLS_EDGE = Array.from(
+  new Set(["SPY", ...ROTATION_THEMES_EDGE.flatMap(([, syms]) => syms)])
+);
+const MONTHS_EN = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
 const LIVE_SYMBOLS = [
@@ -623,6 +648,141 @@ async function fetchYahooSymbol(sym, name, nowIso, isPreMarketOverride) {
   }
 }
 
+function parseNasdaqEtTimestamp(raw) {
+  const m = String(raw || "").trim().match(/^([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s+(AM|PM)\s+ET$/i);
+  if (!m) return null;
+  const month = MONTHS_EN[m[1].toLowerCase()];
+  const day = Number(m[2]);
+  const year = Number(m[3]);
+  let hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const ampm = m[6].toUpperCase();
+  if (!month || !day || !year || hour < 1 || hour > 12 || minute > 59) return null;
+  if (ampm === "AM") {
+    if (hour === 12) hour = 0;
+  } else if (hour !== 12) {
+    hour += 12;
+  }
+  let utcMs = Date.UTC(year, month - 1, day, hour + 5, minute, 0);
+  const etCheck = getEtParts(new Date(utcMs));
+  const desiredWall = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const actualWall = Date.UTC(etCheck.year, etCheck.month - 1, etCheck.day, etCheck.hour, etCheck.minute, 0);
+  utcMs += desiredWall - actualWall;
+  return new Date(utcMs);
+}
+
+function parseNasdaqPrint(sym, data, nowDate, session) {
+  if (!data || typeof data !== "object") return null;
+  const status = String(data.marketStatus || "").toLowerCase();
+  const allowed = session === "PRE_MARKET" ? new Set(["pre-market"]) : new Set(["open", "market open"]);
+  if (!allowed.has(status)) return null;
+  const trade = data.primaryData;
+  if (!trade || typeof trade !== "object") return null;
+  const stamp = parseNasdaqEtTimestamp(trade.lastTradeTimestamp);
+  if (!stamp || !Number.isFinite(stamp.getTime())) return null;
+  const chgRaw = String(trade.percentageChange || "").replace(/%/g, "").replace(/,/g, "").trim();
+  const pxRaw = String(trade.lastSalePrice || "").replace(/\$/g, "").replace(/,/g, "").trim();
+  const change = Number(chgRaw);
+  const price = Number(pxRaw);
+  if (!Number.isFinite(change) || !Number.isFinite(price) || price <= 0) return null;
+  const nowEt = getEtParts(nowDate);
+  const stampEt = getEtParts(stamp);
+  if (stampEt.year !== nowEt.year || stampEt.month !== nowEt.month || stampEt.day !== nowEt.day) return null;
+  if (detectMarketSession(stamp).marketSession !== session) return null;
+  const ageMs = nowDate.getTime() - stamp.getTime();
+  if (ageMs < 0 || ageMs > 20 * 60_000) return null;
+  return {
+    sym,
+    change: roundOrNull(change, 2),
+    trade_utc: formatUtcIso(stamp),
+    price: roundOrNull(price, price < 10 ? 4 : 2),
+  };
+}
+
+function compareEdgeSessionPrints(printsMap, nowDate, session) {
+  const base = printsMap.get("SPY") || null;
+  const themes = [];
+  for (const [name, syms] of ROTATION_THEMES_EDGE) {
+    const members = syms.map((s) => printsMap.get(s)).filter(Boolean);
+    if (!base || members.length !== syms.length) continue;
+    const times = [base, ...members].map((p) => Date.parse(p.trade_utc));
+    if (Math.max(...times) - Math.min(...times) > 10 * 60_000) continue;
+    const change = members.reduce((acc, p) => acc + p.change, 0) / members.length;
+    const outperformers = members.filter((p) => p.change > base.change).length;
+    themes.push({
+      name,
+      change: roundOrNull(change, 2),
+      excess: roundOrNull(change - base.change, 2),
+      outperformers,
+      members,
+    });
+  }
+  themes.sort((a, b) => (b.excess - a.excess) || a.name.localeCompare(b.name));
+  return {
+    session,
+    sampled_utc: formatUtcIso(nowDate),
+    benchmark: base,
+    themes,
+    universe: ROTATION_THEMES_EDGE.length,
+  };
+}
+
+async function fetchEdgeSessionRotation(nowDate, marketSession, cachedRotation) {
+  if (marketSession !== "PRE_MARKET" && marketSession !== "INTRADAY") {
+    return { rotation: null, prints: new Map() };
+  }
+  const reusableCached =
+    cachedRotation && cachedRotation.session === marketSession ? cachedRotation : null;
+  const cachedAgeMs = reusableCached?.sampled_utc
+    ? nowDate.getTime() - Date.parse(reusableCached.sampled_utc)
+    : Infinity;
+  const printsFromCached = new Map();
+  if (reusableCached) {
+    if (reusableCached.benchmark?.sym) printsFromCached.set(reusableCached.benchmark.sym, reusableCached.benchmark);
+    for (const t of reusableCached.themes || []) {
+      for (const m of t.members || []) {
+        if (m?.sym) printsFromCached.set(m.sym, m);
+      }
+    }
+  }
+  if (reusableCached && Number.isFinite(cachedAgeMs) && cachedAgeMs >= 0 && cachedAgeMs < WORKER_CONFIG.SESSION_ROTATION_FRESH_MS) {
+    return { rotation: reusableCached, prints: printsFromCached };
+  }
+  const deadlineMs = Date.now() + WORKER_CONFIG.NASDAQ_BUDGET_MS;
+  const fetched = await mapWithConcurrency(
+    ROTATION_SYMBOLS_EDGE,
+    WORKER_CONFIG.NASDAQ_CONCURRENCY,
+    deadlineMs,
+    async (sym) => {
+      const asset = ROTATION_ETF_SYMS.has(sym) ? "etf" : "stocks";
+      const url = `https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/info?assetclass=${asset}`;
+      const payload = await fetchJsonWithTimeout(
+        url,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Referer": "https://www.nasdaq.com/",
+          },
+        },
+        WORKER_CONFIG.NASDAQ_TIMEOUT_MS
+      );
+      return parseNasdaqPrint(sym, payload?.data, new Date(), marketSession);
+    }
+  );
+  const livePrints = new Map();
+  for (const item of fetched) {
+    if (item && item.sym) livePrints.set(item.sym, item);
+  }
+  if (livePrints.size > 0) {
+    const built = compareEdgeSessionPrints(livePrints, new Date(), marketSession);
+    if (built.themes.length >= 2 || !reusableCached) {
+      return { rotation: built, prints: livePrints };
+    }
+  }
+  return { rotation: reusableCached, prints: livePrints.size > 0 ? livePrints : printsFromCached };
+}
+
 async function safeKvJson(env, key) {
   try {
     if (!env || !env.DESK_STATE || typeof env.DESK_STATE.get !== "function") return null;
@@ -734,18 +894,37 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     return cached;
   }
 
+  const reusableRotation = cached?.session_rotation?.session === marketSession ? cached.session_rotation : null;
+  const sessionPrints = new Map();
+  if (reusableRotation) {
+    if (reusableRotation.benchmark?.sym) sessionPrints.set(reusableRotation.benchmark.sym, reusableRotation.benchmark);
+    for (const t of reusableRotation.themes || []) {
+      for (const m of t.members || []) {
+        if (m?.sym) sessionPrints.set(m.sym, m);
+      }
+    }
+  }
+  const applyPremarketPrint = (q) => {
+    if (!isPreMarket || !q || q.ahPrice !== null) return q;
+    const sp = sessionPrints.get(q.sym);
+    if (sp && finiteOrNull(sp.price) !== null && finiteOrNull(sp.change) !== null) {
+      return { ...q, ahPrice: sp.price, ahChg: sp.change };
+    }
+    return q;
+  };
+
   const liveSymSet = new Set(LIVE_SYMBOLS.map(([sym]) => sym));
   const quotes = LIVE_SYMBOLS.map(([sym, name], idx) => {
     const fresh = fetched[idx];
     const old = cachedBySym[sym];
     if (fresh && fresh.price !== null) {
-      return {
+      return applyPremarketPrint({
         ...fresh,
         r5: fresh.r5 !== null ? fresh.r5 : (old ? old.r5 : null),
         r20: fresh.r20 !== null ? fresh.r20 : (old ? old.r20 : null),
-      };
+      });
     }
-    if (old) return old;
+    if (old) return applyPremarketPrint(old);
     return {
       sym,
       name,
@@ -762,7 +941,7 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
   // Preserve extra regional benchmarks cached by the Python pipeline (APAC/EU).
   for (const [sym, old] of Object.entries(cachedBySym)) {
     if (!liveSymSet.has(sym) && old) {
-      quotes.push(old);
+      quotes.push(applyPremarketPrint(old));
     }
   }
 
@@ -770,7 +949,7 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     updatedAt: formatCnTimestamp(now),
     updatedAtEt,
     marketSession,
-    session_rotation: cached?.session_rotation?.session === marketSession ? cached.session_rotation : null,
+    session_rotation: reusableRotation,
     count: quotes.length,
     quotes,
   };
@@ -1310,7 +1489,8 @@ async function maybeDispatchResearchWorkflow(env, ctx, now = new Date()) {
 }
 
 async function runScheduledMaintenance(env, ctx, now = new Date()) {
-  const active = isActiveMarketSession(now);
+  const { marketSession, updatedAtEt } = detectMarketSession(now);
+  const active = marketSession === "PRE_MARKET" || marketSession === "INTRADAY" || marketSession === "AFTER_HOURS";
   const liveMaxAgeMs = active ? WORKER_CONFIG.CRON_LIVE_ACTIVE_MS : WORKER_CONFIG.CRON_LIVE_IDLE_MS;
   const newsMaxAgeMs = active ? WORKER_CONFIG.CRON_NEWS_ACTIVE_MS : WORKER_CONFIG.CRON_NEWS_IDLE_MS;
   const [cachedLive, cachedNews] = await Promise.all([
@@ -1323,11 +1503,41 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
   const newsAge = isValidNewsPayload(cachedNews) ? parseCnTimestampAgeMs(cachedNews.updatedAt, now.getTime()) : null;
   let refreshedLive = false;
   let refreshedNews = false;
+  let refreshedSessionRotation = false;
 
   if (liveAge === null || liveAge < 0 || liveAge >= liveMaxAgeMs) {
     refreshedLive = true;
     tasks.push(
       fetchAndStoreLive(env, ctx, null, cachedLive, false, WORKER_CONFIG.LIVE_CRON_BUDGET_MS).catch(() => null)
+    );
+  } else if ((marketSession === "PRE_MARKET" || marketSession === "INTRADAY") && isValidLivePayload(cachedLive)) {
+    // On alternating 5-minute ticks when Yahoo quotes are still fresh, spend the subrequest budget
+    // refreshing timestamped Nasdaq same-session rotation & premarket prints cleanly under CF limits.
+    tasks.push(
+      fetchEdgeSessionRotation(now, marketSession, cachedLive.session_rotation || null)
+        .then((edgeRes) => {
+          if (!edgeRes || (!edgeRes.rotation && (!edgeRes.prints || edgeRes.prints.size === 0))) return;
+          const prints = edgeRes.prints instanceof Map ? edgeRes.prints : new Map();
+          const updatedQuotes = cachedLive.quotes.map((q) => {
+            if (marketSession !== "PRE_MARKET" || !q) return q;
+            const sp = prints.get(q.sym);
+            if (sp && finiteOrNull(sp.price) !== null && finiteOrNull(sp.change) !== null) {
+              return { ...q, ahPrice: sp.price, ahChg: sp.change };
+            }
+            return q;
+          });
+          const nextLive = {
+            ...cachedLive,
+            updatedAt: formatCnTimestamp(now),
+            updatedAtEt,
+            marketSession,
+            session_rotation: edgeRes.rotation || cachedLive.session_rotation || null,
+            quotes: updatedQuotes,
+          };
+          refreshedSessionRotation = true;
+          safeKvPut(env, "live", nextLive, ctx);
+        })
+        .catch(() => null)
     );
   }
   if (newsAge === null || newsAge < 0 || newsAge >= newsMaxAgeMs) {
@@ -1344,7 +1554,7 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
 
   await Promise.allSettled(tasks);
   const dispatch = await dispatchPromise;
-  return { refreshedLive, refreshedNews, dispatch };
+  return { refreshedLive, refreshedNews, refreshedSessionRotation, dispatch };
 }
 
 export default {

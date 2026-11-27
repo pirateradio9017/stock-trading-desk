@@ -297,13 +297,23 @@ def build_research_context(
     if signal:
         lines.append(f"纳斯达克当场成交：{signal.session}，相对上个美股收盘；有效篮子 {len(signal.themes)}/{signal.universe}。")
         for theme in signal.themes:
-            trades = "、".join(f"{p.sym} {p.change:+.2f}% @ {p.trade_utc}" for p in theme.members)
+            trades = "、".join(
+                f"{p.sym} " + (f"${p.price:.2f} " if p.price is not None else "") + f"{p.change:+.2f}% @ {p.trade_utc}"
+                for p in theme.members
+            )
             lines.append(f"{theme.name} 等权 {theme.change:+.2f}%，相对 SPY {theme.excess:+.2f} 个百分点；{trades}")
         if signal.benchmark:
-            lines.append(f"基准 SPY {signal.benchmark.change:+.2f}% @ {signal.benchmark.trade_utc}")
+            bp = f"${signal.benchmark.price:.2f} " if signal.benchmark.price is not None else ""
+            lines.append(f"基准 SPY {bp}{signal.benchmark.change:+.2f}% @ {signal.benchmark.trade_utc}")
         lines.append("这些逐笔来源的最新成交优先于日线栏中的昨收。把当场领先主题和上一交易日动量榜首交叉核对，区分短线修复与持续轮动；盘前成交不能写成正式开盘确认。无覆盖的主题不得推断涨跌。")
     ranks = ranked_baskets(market)
     if ranks:
+        if signal and signal.themes and signal.themes[0].name != ranks[0]["name"]:
+            lines.append(
+                f"【口径分歧提醒】今日当场领涨主题={signal.themes[0].name}({signal.themes[0].change:+.2f}%)，"
+                f"而截至 {ranks[0]['as_of']} 的美股多日收盘动量首位={ranks[0]['name']}(5D {ranks[0]['r5']:+.2f}%)；"
+                "请在研判中拆解该分歧（短线事件/跨时区修复 vs 中期防御轮动与高利率约束）。"
+            )
         lines.append("本轮美股主题等权篮子，按相对标普动量排序。开放窗口逐一复核领先主题能否替代旧主线；盘前另述亚欧领先证据、对应主题和美国现货确认条件。")
         for row in ranks:
             lines.append(f"{row['as_of']} {row['name']} {','.join(row['members'])}：{row['plain']} 20日 {row['r20']:+.2f}%。")
@@ -358,8 +368,14 @@ def build_research_context(
         )
         fresh_tag = _quote_freshness_tag(q.sym, q.tsUtc, now_utc, decision)
         ah_note = _format_ah_note(q.ahPrice, q.ahChg, decision)
+        s_obj = market.series_map.get(q.sym)
+        dd_note = (
+            f" | 距52W高点=-{100 * (1 - q.price / s_obj.high_52w):.1f}%"
+            if s_obj and s_obj.high_52w and q.price and q.price <= s_obj.high_52w
+            else ""
+        )
         lines.append(
-            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{ah_note}{val_info} | {fresh_tag}"
+            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{dd_note}{ah_note}{val_info} | {fresh_tag}"
         )
 
     if bundle.primary.apac_eu_summary:
@@ -459,6 +475,10 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
    - `market_brief` 输出独立的跨市场精简快报，控制在 **220–480 字**、分 **3–4 条编号短讯**（`1) 亚欧与期指：...`、`2) 利率与商品：...`、`3) 加密与风险：...`），每条 2–3 句写清时间（含时区）、核心变化、传导与下一步验证。**全中文资产名，严禁堆砌原始期货/外盘代码（`NQ=F`/`GC=F`/`SI=F`/`HG=F`/`BZ=F`/`ASML.AS`）和 `对应 M1/C4` 等内部编号**，严禁为了凑字数啰嗦或编造。
 5. **去代码化人话表达铁律**：
    - **这是给人读的极简金融简报，不是机器日志**。除 `stocks`、`anchor_sym` 结构化字段外，所有中文标题与叙述中一律优先使用自然中文名称（`纳指期货`、`标普期货`、`黄金`、`白银`、`铜`、`布油`、`美油`、`阿斯麦欧股`、`台积电`、`英伟达`、`博通`、`半导体ETF`、`长债ETF`、`能源ETF`、`比特币`、`美元指数`、`近5日`/`近20日`），仅在首次点名关键美股标的时可轻附括号代码如 `英伟达(NVDA)`，绝不连续堆砌英文 Ticker 串或 `5D`/`20D`/`M1/C4` 缩写。
+   - **买方因果辨析与同主题龙头分化（提升推理锐度）**：
+     - 当“今日纳斯达克当场领涨主题”（如光模块、云算力、芯片设计）与“上日美股多日收盘动量首位”（如住宅建筑）出现显著分歧时，**必须**在 `headline`/`plain_guide`/`market_brief` 中点明分歧原因（如事件/亚欧映射驱动的盘前修复 vs 利率高位压制下的中期防御轮动），并给出开盘放量确认或证伪的具体价位/门槛。
+     - 在核心主线内部（尤其是 M1 算力与半导体），必须基于 Briefing 中的**实测远期 PE 折价、52 周回撤深度、亚欧同业映射与近期新闻摩擦（监管/审计/听证 vs 零摩擦晶圆代工/设备底座）**区分龙头强弱，避免把整条产业链一概而论。
+     - 评估利率敏感板块（如住宅建筑 `ITB`）或高 Beta 资产（如加密矿企/算力云）时，必须交叉对照实测 `10Y 美债`、`30Y 按揭利率`、`FRED HY OAS` 与 SEC 增发公告，识别“多日顺风但宏观逆风/盈亏比偏低”的潜在诱多陷阱。
    - 全部使用简体中文，克制、锐利、去水词，中英文与数字之间保留单个半角空格，中文全角标点前后不加多余空格，禁止出现 `Date(...)`、`TODO`、`TBD` 等占位符。
 """
 
@@ -1013,10 +1033,38 @@ def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle) -> list[R
     quote = bundle.market.get_quote(anchor)
     if quote and quote.price is not None:
         evidence.append(ResearchEvidence(
-            kind="market", text=f"{anchor} 价格 {_fmt_num(quote.price)}，5 日变化 {_fmt_pct(quote.r5)}。",
+            kind="market", text=f"{anchor} 日线参考价 {_fmt_num(quote.price)}，5 日变化 {_fmt_pct(quote.r5)}。",
             source="Yahoo Finance", as_of=quote.tsUtc,
             source_url=f"https://finance.yahoo.com/quote/{anchor}",
         ))
+    sig = bundle.market.live.session_rotation
+    if sig and sig.themes:
+        stage = "盘前" if sig.session == "PRE_MARKET" else "盘中"
+        for theme in sig.themes:
+            hit = next((m for m in theme.members if m.sym.upper() == anchor.upper()), None)
+            if hit is not None:
+                px_txt = f" ${hit.price:.2f}" if hit.price is not None else ""
+                kind = "etf" if "etf" in SYMBOL_SPEC_MAP[hit.sym].category else "stocks"
+                evidence.append(ResearchEvidence(
+                    kind="market",
+                    text=f"{hit.sym} 今日{stage}{px_txt}（{hit.change:+.2f}%），所属「{theme.name}」等权 {theme.change:+.2f}%（相对 SPY {theme.excess:+.2f}pp）。",
+                    source="Nasdaq",
+                    as_of=hit.trade_utc,
+                    source_url=f"https://www.nasdaq.com/market-activity/{kind}/{hit.sym.lower()}",
+                ))
+                break
+    if anchor.upper() in {"NVDA", "TSM", "ASML", "AVGO", "SMH", "SOXX"}:
+        for overseas_sym, label in (("2330.TW", "台积电台股"), ("000660.KS", "SK海力士"), ("ASML.AS", "阿斯麦欧股")):
+            oq = bundle.market.get_quote(overseas_sym)
+            if oq and oq.chg is not None and oq.tsUtc[:10] == bundle.fetched_at_utc.date().isoformat():
+                evidence.append(ResearchEvidence(
+                    kind="market",
+                    text=f"跨时区芯片映射：{label}({overseas_sym}) 当日 {oq.chg:+.2f}%。",
+                    source="Yahoo Finance",
+                    as_of=oq.tsUtc,
+                    source_url=f"https://finance.yahoo.com/quote/{overseas_sym}",
+                ))
+                break
     for filing in bundle.primary.sec_filings:
         if filing.url == url:
             evidence.append(ResearchEvidence(

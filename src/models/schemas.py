@@ -217,6 +217,7 @@ class SessionPrint(_DeskModel):
     sym: str
     change: FiniteFloat
     trade_utc: CleanTimestampStr
+    price: FiniteFloat | None = None
 
 
 class SessionTheme(_DeskModel):

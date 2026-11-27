@@ -32,7 +32,7 @@ from src.config import (
     format_utc_iso,
     get_market_session,
 )
-from src.ingestion.session_rotation import fetch_session_rotation
+from src.ingestion.session_rotation import fetch_session_snapshot
 from src.models.schemas import (
     LinkageTrend,
     LinkageTrendSeries,
@@ -649,7 +649,7 @@ async def fetch_market_snapshot(
         limits=limits,
         follow_redirects=True,
     ) as client:
-        session_task = asyncio.create_task(fetch_session_rotation(ts_now, market_session))
+        session_task = asyncio.create_task(fetch_session_snapshot(ts_now, market_session))
         valuations_task = asyncio.create_task(_fetch_equity_valuations(client, ts_now.astimezone(TZ_ET).date()))
         screener_task = asyncio.create_task(_fetch_screeners(client)) if include_screener else None
         tasks = [
@@ -665,7 +665,7 @@ async def fetch_market_snapshot(
             for spec in ALL_SYMBOLS
         ]
         results = await asyncio.gather(*tasks)
-        session_rotation = await session_task
+        session_rotation, session_prints = await session_task
 
         movers: list[ScreenerMover] = []
         if screener_task is not None:
@@ -682,6 +682,19 @@ async def fetch_market_snapshot(
             valuations = {}
 
     series_map: dict[str, SymbolSeries] = {res.spec.sym: res for res in results}
+
+    # Backfill verified same-day Nasdaq premarket prints when Yahoo chart meta omits preMarketPrice.
+    if market_session == "PRE_MARKET" and session_prints:
+        for sym, sprint in session_prints.items():
+            s = series_map.get(sym)
+            if s and s.quote is not None and s.quote.ahPrice is None and sprint.price is not None:
+                series_map[sym] = SymbolSeries(
+                    spec=s.spec,
+                    dates=s.dates,
+                    closes=s.closes,
+                    quote=s.quote.model_copy(update={"ahPrice": sprint.price, "ahChg": sprint.change}),
+                    high_52w=s.high_52w,
+                )
 
     # Keep core symbols first, followed by benchmark symbols.
     ordered_specs = list(CORE_SYMBOLS) + list(BENCHMARK_SYMBOLS)

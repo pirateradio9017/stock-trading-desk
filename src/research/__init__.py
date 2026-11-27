@@ -85,9 +85,21 @@ async def run_research_cycle(
     )
     ranks = ranked_baskets(bundle.market)
     if len(ranks) >= 6:
-        candidates = rotation_candidates(ranks, evolved.mainlines, prev_state.candidates if prev_state else [],
-                                         now_utc.astimezone(TZ_ET).date().isoformat())
-        note = f"美股行情截至 {ranks[0]['as_of']} · {len(ranks)}/{len(THEMES)} 个主题数据齐全。按1日、5日、20日相对标普涨幅加权（40%、45%、15%），展示前六。"
+        candidates = rotation_candidates(
+            ranks,
+            evolved.mainlines,
+            prev_state.candidates if prev_state else [],
+            now_utc.astimezone(TZ_ET).date().isoformat(),
+            market=bundle.market,
+        )
+        sig = bundle.market.live.session_rotation
+        note = f"美股收盘动量截至 {ranks[0]['as_of']} · {len(ranks)}/{len(THEMES)} 个主题数据齐全（1日40%/5日45%/20日15%相对标普加权，展示前六）。"
+        if sig and sig.themes and sig.themes[0].name != ranks[0]["name"]:
+            stage = "盘前" if sig.session == "PRE_MARKET" else "盘中"
+            note = (
+                f"口径对照：今日{stage}实时领涨为「{sig.themes[0].name}」（{sig.themes[0].change:+.2f}%）；"
+                f"下方多日收盘动量截至 {ranks[0]['as_of']}，榜首为「{ranks[0]['name']}」（5日 {ranks[0]['r5']:+.2f}%），两者分歧代表短线修复与中期防御切换。"
+            )
     else:
         candidates = prev_state.candidates if prev_state else evolved.candidates
         note = f"本轮仅 {len(ranks)}/{len(THEMES)} 个主题数据齐全，暂停横向排名。" + ("展示上期候补。" if prev_state else "展示初始研究候补。")

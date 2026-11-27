@@ -638,8 +638,32 @@ process.on('beforeExit', () => {
   assert.equal(dispatchCalls[0].body.inputs.deploy_worker, 'false');
   assert.equal(schedKv.get('dispatch_meta').lastStatus, 'dispatched');
 
+  // Edge Nasdaq premarket parser (EST & EDT) and session_rotation aggregation
+  const estParsed = ctx.parseNasdaqEtTimestamp('Nov 27, 2026 6:31 AM ET');
+  assert.equal(estParsed.toISOString(), '2026-11-27T11:31:00.000Z');
+  const edtParsed = ctx.parseNasdaqEtTimestamp('Jul 15, 2026 6:30 AM ET');
+  assert.equal(edtParsed.toISOString(), '2026-07-15T10:30:00.000Z');
+  const preNow = new Date('2026-11-27T11:32:00Z');
+  const spyPrint = ctx.parseNasdaqPrint('SPY', {
+    marketStatus: 'Pre-Market',
+    primaryData: { lastSalePrice: '$729.37', percentageChange: '+1.77%', lastTradeTimestamp: 'Nov 27, 2026 6:31 AM ET' },
+  }, preNow, 'PRE_MARKET');
+  const litePrint = ctx.parseNasdaqPrint('LITE', {
+    marketStatus: 'Pre-Market',
+    primaryData: { lastSalePrice: '$517.46', percentageChange: '+8.58%', lastTradeTimestamp: 'Nov 27, 2026 6:31 AM ET' },
+  }, preNow, 'PRE_MARKET');
+  const cohrPrint = ctx.parseNasdaqPrint('COHR', {
+    marketStatus: 'Pre-Market',
+    primaryData: { lastSalePrice: '$212.69', percentageChange: '+8.41%', lastTradeTimestamp: 'Nov 27, 2026 6:31 AM ET' },
+  }, preNow, 'PRE_MARKET');
+  assert.equal(litePrint.price, 517.46);
+  const edgeRot = ctx.compareEdgeSessionPrints(new Map([['SPY', spyPrint], ['LITE', litePrint], ['COHR', cohrPrint]]), preNow, 'PRE_MARKET');
+  assert.equal(edgeRot.themes.length, 1);
+  assert.equal(edgeRot.themes[0].name, '光模块与高速互联');
+  assert.equal(edgeRot.themes[0].excess, 6.73);
+
   testsCompleted = true;
-  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance & GitHub dispatch)');
+  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance, GitHub dispatch & edge Nasdaq session rotation)');
 })().catch((e) => {
   testsCompleted = true;
   console.error(e);

@@ -28,7 +28,8 @@ def parse_print(sym, data, now, session):
     if (stamp.date() != now.astimezone(TZ_ET).date() or get_market_session(stamp) != session
             or not timedelta(0) <= now - stamp <= timedelta(minutes=20)):
         return None
-    return SessionPrint(sym=sym, change=change, trade_utc=format_utc_iso(stamp))
+    px_digits = 4 if price < 10 else 2
+    return SessionPrint(sym=sym, change=round(change, 2), trade_utc=format_utc_iso(stamp), price=round(price, px_digits))
 
 
 def compare_prints(prints, now, session):
@@ -50,9 +51,10 @@ def compare_prints(prints, now, session):
                            benchmark=base, themes=rows, universe=len(ROTATION_THEMES))
 
 
-async def fetch_session_rotation(now, session):
+async def fetch_session_snapshot(now, session):
+    """Fetch timestamped same-session Nasdaq prints and aggregate theme rotation."""
     if session not in {"PRE_MARKET", "INTRADAY"}:
-        return None
+        return None, {}
     loop = asyncio.get_running_loop()
     start = loop.time()
     sem = asyncio.Semaphore(6)
@@ -78,5 +80,11 @@ async def fetch_session_rotation(now, session):
         return None
 
     results = await asyncio.gather(*(fetch(s) for s in symbols))
-    return compare_prints({p.sym: p for p in results if p}, now + timedelta(seconds=loop.time()-start), session)
+    prints = {p.sym: p for p in results if p}
+    return compare_prints(prints, now + timedelta(seconds=loop.time()-start), session), prints
+
+
+async def fetch_session_rotation(now, session):
+    rotation, _ = await fetch_session_snapshot(now, session)
+    return rotation
 
