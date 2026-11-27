@@ -738,11 +738,11 @@ def _call_deepseek_sync(api_key: str, model_name: str, prompt: str, timeout_sec:
         }, json={
             "model": model_name,
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT + "\nReturn only a JSON object matching this JSON Schema:\n" + schema},
+                {"role": "system", "content": _SYSTEM_PROMPT + "\n在保证证据、传导与反证完整的前提下避免重复，所有中文叙述合计控制在6000字以内，优先完整输出全部必填字段。\nReturn only a JSON object matching this JSON Schema:\n" + schema},
                 {"role": "user", "content": prompt},
             ],
             "response_format": {"type": "json_object"},
-            "max_tokens": 12000,
+            "max_tokens": 24000,
             "stream": False,
         })
         response.raise_for_status()
@@ -1034,7 +1034,7 @@ async def synthesize_research_state(
     provider = os.getenv("DESK_LLM_PROVIDER", "auto").strip().lower()
     attempts = []
     if deepseek_key and provider in ("auto", "deepseek"):
-        attempts.extend([("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), deepseek_key, _call_deepseek_sync, 120.0)] * 3)
+        attempts.extend([("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), deepseek_key, _call_deepseek_sync, 180.0)] * 3)
     if api_key and provider in ("auto", "gemini"):
         attempts.extend(("gemini", m, api_key, _call_gemini_sync, timeout_sec) for m in model_chain[:2])
     if use_llm and attempts:
