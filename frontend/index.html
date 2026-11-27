@@ -390,6 +390,26 @@
       gap: 8px 12px;
       align-items: center;
     }
+    .chart-reading {
+      padding: 8px 10px;
+      margin-top: 8px;
+      background: var(--paper-soft);
+      border-radius: 8px;
+      font-size: .85rem;
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+    .chart-legend button[aria-pressed="false"] { opacity: .65; text-decoration: line-through; }
+    .rotation-bars { display: grid; gap: 5px; }
+    .rotation-bar { display: grid; grid-template-columns: 4.25rem minmax(0,1fr) 4.5rem; gap: 8px; align-items: center; font: .8rem var(--font-mono); }
+    .rotation-bar strong { text-align: right; }
+    .rotation-track { display: block; position: relative; height: 12px; background: var(--paper-card); border-radius: 4px; }
+    .rotation-track::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid var(--border-strong); }
+    .rotation-fill { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
+    .rotation-fill.chg-up { background: var(--up); }
+    .rotation-fill.chg-down { background: var(--down); }
+    .radar-key { display: inline-block; width: 22px; border-top: 3px solid #315a68; margin-right: 6px; vertical-align: middle; }
+    .radar-key.prior { border-top: 2px dashed #8b6436; }
     .chart-legend { color: var(--ink-muted); font-size: .78rem; margin-top: 8px; }
     .chart-key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
     .quote-ribbon {
@@ -894,7 +914,7 @@
       .kpi-card { padding: 7px; }
       .kpi-val { font-size: .95rem; overflow-wrap: anywhere; }
       .kpi-val-row { gap: 3px; }
-      .filter-btn, .radar-dimensions button, #radarReplay, #toggleHistory {
+      .filter-btn, .chart-legend .btn, #setupChartLinks .btn, .radar-dimensions button, #radarReplay, #toggleHistory {
         min-height: 44px;
       }
       .tab-panel, #setupHeading, .setup-card, [data-macro-id] { scroll-margin-top: 68px; }
@@ -1000,9 +1020,7 @@
             </section>
             <section class="ed-soft">
               <h3>5 日收益率对比</h3>
-              <div class="chart-box chart-plot">
-                <canvas id="candBarChart" role="img" aria-label="候补资产 5 日收益柱状图"></canvas>
-              </div>
+              <div id="candBarChart" class="rotation-bars" role="list" aria-label="按 5 日收益排序"></div>
             </section>
           </div>
           <div id="candidatesContainer" class="cand-grid"></div>
@@ -1012,7 +1030,7 @@
       <section id="panel-linkage" class="tab-panel">
         <div class="ed-card">
           <h2 class="section-title"><span>跨资产相关性热力矩阵</span></h2>
-          <p class="section-note" id="corrMethod">相关系数基于共同交易日的日收益率。</p>
+          <p class="section-note" id="corrMethod">基于共同交易日的日收益率。+1 为同向，−1 为反向，颜色越深表示相关程度越强。</p>
           <div class="table-scroll" id="corrMatrixWrap" role="region" aria-label="跨资产相关性矩阵，可横向滚动" tabindex="0"></div>
         </div>
 
@@ -1038,6 +1056,7 @@
           <div class="chart-box-tall">
             <canvas id="macroRadarCanvas" role="img" aria-label="五维宏观顺逆风评分；可使用下方按钮跳转到对应维度详情"></canvas>
           </div>
+          <div id="radarSeriesLegend" class="chart-legend"></div>
           <div id="radarDimensions" class="radar-dimensions" aria-label="跳转到维度详情"></div>
           <p id="radarComparison" class="radar-note"></p>
         </div>
@@ -1085,6 +1104,7 @@
         "#B67A27",
         "#4F6070",
         "#6D5B7B",
+        "#287590",
       ];
 
       function escapeHtml(val) {
@@ -1284,12 +1304,18 @@
         return {x, y, left, right, top, bottom};
       }
 
-      function drawLines(canvasId, labels, series, legendId) {
+      const hiddenChartLines = new Map();
+
+      function drawLines(canvasId, labels, allSeries, legendId, unit = "", baseline = null) {
         const frame = canvasFrame(canvasId);
         if (!frame) return;
         const {ctx, width, height, canvas} = frame;
         const legend = legendId && document.getElementById(legendId);
+        const hidden = hiddenChartLines.get(canvasId) || new Set();
+        hiddenChartLines.set(canvasId, hidden);
+        const series = allSeries.filter(item => !hidden.has(item.label));
         const allValues = series.flatMap(item => item.values).filter(value => finiteOrNull(value) !== null);
+        if (allValues.length && baseline !== null) allValues.push(baseline);
         if (!allValues.length) {
           if (legend) legend.innerHTML = "";
           canvas.onpointermove = canvas.onkeydown = canvas.onfocus = null;
@@ -1312,6 +1338,7 @@
         }
         for (const item of series) {
           ctx.strokeStyle = ctx.fillStyle = item.color;
+          if (legend) ctx.setLineDash([[], [7, 3], [2, 3], [9, 3, 2, 3], [5, 2], [1, 2]][allSeries.indexOf(item) % 6]);
           ctx.lineWidth = 2;
           let previous = null;
           for (let index = 0; index < item.values.length; index += 1) {
@@ -1323,8 +1350,27 @@
             previous = value;
           }
         }
+        ctx.setLineDash([]);
         if (!legend) return;
-        legend.innerHTML = series.map(item => `<span><i class="chart-key" style="background:${item.color}"></i>${escapeHtml(item.label)}</span>`).join("");
+        if (baseline !== null && baseline >= yRange[0] && baseline <= yRange[1]) {
+          ctx.strokeStyle = "#607873";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 3]);
+          chartSegment(ctx, axes.left, axes.y(baseline), axes.right, axes.y(baseline));
+          ctx.setLineDash([]);
+        }
+        legend.innerHTML = allSeries.map((item, index) =>
+          `<button type="button" class="btn" data-series="${index}" aria-pressed="${!hidden.has(item.label)}"><i class="chart-key" style="background:${item.color}"></i>${escapeHtml(item.label)}</button>`
+        ).join("");
+        legend.onclick = event => {
+          const button = event.target.closest("[data-series]");
+          if (!button) return;
+          const label = allSeries[Number(button.dataset.series)].label;
+          if (hidden.has(label)) hidden.delete(label);
+          else if (series.length > 1) hidden.add(label);
+          drawLines(canvasId, labels, allSeries, legendId, unit, baseline);
+          legend.querySelector(`[data-series="${button.dataset.series}"]`)?.focus({preventScroll: true});
+        };
         let tooltip = canvas.parentElement.querySelector(".chart-tooltip");
         if (!tooltip) {
           tooltip = document.createElement("div");
@@ -1339,12 +1385,13 @@
           activeIndex = Math.max(0, Math.min(index, steps - 1));
           const values = series.flatMap(item => {
             const value = finiteOrNull(item.values[activeIndex]);
-            return value === null ? [] : [`${item.label} ${value.toFixed(2)}`];
+            return value === null ? [] : [`${item.label} ${value.toFixed(2)}${unit}`];
           });
           tooltip.textContent = [labels[activeIndex] || `第 ${activeIndex + 1} 期`, ...values].join("\n");
           tooltip.hidden = false;
         };
         canvas.onpointermove = event => show(Math.round((event.offsetX - axes.left) / (axes.right - axes.left) * (steps - 1)));
+        canvas.onpointerdown = canvas.onpointermove;
         canvas.onpointerleave = canvas.onblur = () => { tooltip.hidden = true; };
         canvas.onfocus = () => show(activeIndex);
         canvas.onkeydown = event => {
@@ -1354,7 +1401,7 @@
         };
       }
 
-      function drawScatter(id, points, xTitle, yTitle, onPick) {
+      function drawScatter(id, points, xTitle, yTitle, onPick, reading, includeZero = true) {
         const frame = canvasFrame(id);
         if (!frame) return;
         const {ctx, canvas} = frame;
@@ -1362,8 +1409,8 @@
           chartEmpty(frame);
           return;
         }
-        const xRange = chartRange(points.map(p => p.x), true);
-        const yRange = chartRange(points.map(p => p.y), true);
+        const xRange = chartRange(points.map(p => p.x), includeZero);
+        const yRange = chartRange(points.map(p => p.y), includeZero);
         const axes = chartAxes(frame, xRange, yRange, xTitle, yTitle);
         if (xRange[0] < 0 && xRange[1] > 0) {
           ctx.strokeStyle = "#7c928e";
@@ -1386,15 +1433,21 @@
             ctx.fillText(point.label, labelX, labelY);
           }
         }
+        const readPoint = point => {
+          if (reading && point) reading.textContent = `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}`;
+        };
+        if (reading) readPoint(points[0]);
         const nearest = (event) => points
           .map(point => ({point, distance: Math.hypot(axes.x(point.x) - event.offsetX, axes.y(point.y) - event.offsetY)}))
-          .reduce((best, hit) => hit.distance < best.distance ? hit : best, {distance: 13});
+          .reduce((best, hit) => hit.distance < best.distance ? hit : best, {distance: event.pointerType === "touch" ? 27 : 18});
         canvas.onpointermove = event => {
           const {point} = nearest(event);
           canvas.style.cursor = point && onPick ? "pointer" : "";
+          readPoint(point);
           const title = point ? `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}` : "";
           if (canvas.title !== title) canvas.title = title;
         };
+        canvas.onpointerdown = event => readPoint(nearest(event).point);
         canvas.onclick = onPick ? event => {
           const {point} = nearest(event);
           if (point) onPick(point);
@@ -1515,7 +1568,7 @@
           values: row.spark || [],
           color: MAINLINE_PALETTE[index % MAINLINE_PALETTE.length]
         }));
-        drawLines("ml-overview-chart", labels, series, "mainlineTrendLegend");
+        drawLines("ml-overview-chart", labels, series, "mainlineTrendLegend", "", 100);
       }
 
       function renderMomentum() {
@@ -1569,6 +1622,7 @@
           : STORE.state ? "当前研究快照暂无估值与回撤数据" : "正在读取估值与回撤数据";
         plot.innerHTML = points.length ? `
           <canvas id="setupScatterCanvas" role="img" aria-label="52 周回撤深度与远期市盈率散点图"></canvas>
+          <p class="chart-reading" id="setupReading"></p>
           <div class="setup-chart-links" id="setupChartLinks" aria-label="定位散点对应标的">${points.map(p =>
             `<button type="button" class="btn" data-index="${p.key}" data-setup-focus="${escapeHtml(p.label)}"
               aria-label="${escapeHtml(p.label)}，回撤 ${p.x.toFixed(1)}%，远期市盈率 ${p.y.toFixed(1)} 倍">${escapeHtml(p.label)}</button>`
@@ -1615,7 +1669,7 @@
       let setupPoints = [];
       function drawSetupPlot(points = setupPoints) {
         setupPoints = points;
-        if (points.length) drawScatter("setupScatterCanvas", points, "52 周回撤深度 (%)", "远期市盈率 (倍)", point => focusSetupCard(point.key));
+        if (points.length) drawScatter("setupScatterCanvas", points, "52 周回撤深度 (%)", "远期市盈率 (倍)", point => focusSetupCard(point.key), document.getElementById("setupReading"), false);
       }
 
       function moveTo(element) {
@@ -1919,62 +1973,30 @@
         const assets = Array.isArray(STORE.state.analytics.rotationAssets)
           ? STORE.state.analytics.rotationAssets
           : [];
-        if (!assets.length) return;
+        const numeric = assets.map(item => ({label: item.sym, x: finiteOrNull(item.r20), y: finiteOrNull(item.r5)}));
+        const colors = value => value > 0 ? getUpColor() : value < 0 ? getDownColor() : "#566f68";
+        const scatter = numeric.filter(point => point.x !== null && point.y !== null)
+          .map(point => ({...point, color: colors(point.y)}));
+        const plot = document.getElementById("candQuadChart");
+        let reading = document.getElementById("candQuadReading");
+        if (!reading) {
+          reading = document.createElement("p");
+          reading.id = "candQuadReading";
+          reading.className = "chart-reading";
+          plot.parentElement.after(reading);
+        }
+        reading.hidden = !scatter.length;
+        drawScatter(plot.id, scatter, "20 日收益 (%)", "5 日收益 (%)", null, reading);
 
-        const upColor = getUpColor();
-        const downColor = getDownColor();
-        const pointColors = assets.map((a) => (Number(a.r5) >= 0 ? upColor : downColor));
-
-        makeOrReplaceChart("candQuadChart", {
-          type: "scatter",
-          data: {
-            datasets: [{
-              label: "轮动资产 (X=20D%, Y=5D%)",
-              data: assets.map((a) => ({ x: Number(a.r20) || 0, y: Number(a.r5) || 0, sym: a.sym, name: a.name })),
-              backgroundColor: pointColors,
-              borderColor: pointColors,
-              pointRadius: 6,
-              pointHoverRadius: 8,
-            }],
-          },
-          options: {
-            plugins: {
-              legend: { display: false },
-              tooltip: {
-                callbacks: {
-                  label: (ctx) => {
-                    const raw = ctx.raw || {};
-                    return `${raw.sym || ""} (${raw.name || ""}): 20D ${raw.x}%, 5D ${raw.y}%`;
-                  },
-                },
-              },
-            },
-            scales: {
-              x: { title: { display: true, text: "20日收益 (%)" }, grid: { color: "rgba(31,29,26,0.06)" } },
-              y: { title: { display: true, text: "5日收益 (%)" }, grid: { color: "rgba(31,29,26,0.06)" } },
-            },
-          },
-        });
-
-        makeOrReplaceChart("candBarChart", {
-          type: "bar",
-          data: {
-            labels: assets.map((a) => a.sym),
-            datasets: [{
-              label: "5日涨跌幅 (%)",
-              data: assets.map((a) => Number(a.r5) || 0),
-              backgroundColor: pointColors,
-              borderRadius: 4,
-            }],
-          },
-          options: {
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { grid: { display: false }, ticks: { font: { size: 11 } } },
-              y: { grid: { color: "rgba(31,29,26,0.06)" }, ticks: { font: { size: 11 } } },
-            },
-          },
-        });
+        const ranked = numeric.filter(row => row.y !== null).sort((a, b) => b.y - a.y);
+        const limit = Math.max(0.01, ...ranked.map(row => Math.abs(row.y)));
+        document.getElementById("candBarChart").innerHTML = ranked.length ? ranked.map(row => {
+          const span = Math.abs(row.y) / limit * 50;
+          return `<div class="rotation-bar" role="listitem"><span>${escapeHtml(row.label)}</span>
+            <span class="rotation-track" aria-hidden="true"><i class="rotation-fill ${chgClass(row.y)}"
+            style="left:${row.y < 0 ? 50 - span : 50}%;width:${span}%"></i></span>
+            <strong class="${chgClass(row.y)}">${escapeHtml(fmtChg(row.y))}</strong></div>`;
+        }).join("") : '<div class="empty-box">暂无可比收益率</div>';
       }
 
       function renderLinkage() {
@@ -2047,7 +2069,7 @@
           label: item.label || item.sym,
           values: Array.isArray(item.values) ? item.values : [],
           color: MAINLINE_PALETTE[index % MAINLINE_PALETTE.length],
-        })), "linkageTrendLegend");
+        })), "linkageTrendLegend", "%", 0);
       }
 
       function macroScoreColor(score) {
@@ -2168,39 +2190,24 @@
           })));
           return;
         }
-        if (type === "scatter") {
-          drawScatter(id, datasets[0].data.map((point, index) => ({
-            ...point, label: point.sym, color: datasets[0].backgroundColor[index]
-          })), options.scales.x.title.text, options.scales.y.title.text);
-          return;
-        }
         const frame = canvasFrame(id);
         if (!frame) return;
-        const {ctx, width, height} = frame;
-        if (type === "bar") {
-          const row = datasets[0];
-          const [low, high] = chartRange(row.data, true);
-          const y = value => 12 + (high - value) * (height - 45) / (high - low);
-          const step = (width - 24) / row.data.length;
-          ctx.strokeStyle = "#bdc9c6";
-          chartSegment(ctx, 12, y(0), width - 12, y(0));
-          row.data.forEach((value, index) => {
-            const x = 12 + step * (index + .5);
-            ctx.fillStyle = row.backgroundColor[index];
-            ctx.fillRect(x - step * .31, Math.min(y(0), y(value)), step * .62, Math.abs(y(value) - y(0)));
-            ctx.fillStyle = "#485e5d";
-            ctx.textAlign = "center";
-            if (step > 34 || index % 2 === 0) ctx.fillText(data.labels[index], x, height - 12, step * (step > 34 ? 1 : 2));
-          });
-          return;
-        }
-
+        const {ctx, width, height, canvas} = frame;
         cancelAnimationFrame(radarFrame);
         const cx = width / 2, cy = height / 2;
         const radius = Math.min(width * .29, height * .34);
         const point = (index, score) => {
           const angle = index * Math.PI * 2 / data.labels.length - Math.PI / 2;
           return [cx + Math.cos(angle) * radius * score / 100, cy + Math.sin(angle) * radius * score / 100];
+        };
+        canvas.onclick = event => {
+          const hit = data.labels.map((_, index) => {
+            const score = datasets[0].data[index];
+            if (!Number.isFinite(score)) return {index, distance: Infinity};
+            const [x, y] = point(index, score);
+            return {index, distance: Math.hypot(event.offsetX - x, event.offsetY - y)};
+          }).reduce((nearest, candidate) => candidate.distance < nearest.distance ? candidate : nearest, {distance: 23});
+          if (hit.distance < 23) options.onClick(event, [hit]);
         };
         const start = performance.now();
         const duration = options.animation?.duration || 0;
@@ -2213,6 +2220,10 @@
             data.labels.forEach((_, index) => ctx[index ? "lineTo" : "moveTo"](...point(index, score)));
             ctx.closePath();
             ctx.stroke();
+            ctx.fillStyle = "#485e5d";
+            ctx.textAlign = "left";
+            const [rx, ry] = point(0, score);
+            ctx.fillText(String(score), rx + 5, ry + 3);
           }
           ctx.textAlign = "center";
           ctx.fillStyle = "#485e5d";
@@ -2266,8 +2277,10 @@
         document.getElementById('radarComparison').textContent = radarPrevious ? "虚线为本浏览器上次观察（" + radarPrevious.time + "），并非固定上一交易日。" : "首次观察暂无对比；后续研究更新后，可与本浏览器上次观察比较。";
         document.getElementById('radarDimensions').innerHTML = rows.map(r => `<button type="button" data-radar-id="${r.id}" aria-pressed="${r.id === radarSelected}">${escapeHtml(r.label)} · ${r.score === null ? "待补充" : r.score}</button>`).join('');
         document.querySelectorAll('[data-radar-id]').forEach(b => b.onclick = () => selectRadarDimension(b.dataset.radarId));
-        const datasets = [{label:"本期代理评分",data:rows.map(r=>r.score),borderColor:"#5d7580",backgroundColor:"rgba(93,117,128,.16)",pointBackgroundColor:"#354951",pointBorderColor:"#5d7580",pointBorderWidth:3,pointRadius:5,pointHoverRadius:8,borderWidth:3,spanGaps:false}];
-        if (radarPrevious) datasets.push({label:"上次观察",data:radarPrevious.scores,borderColor:"#b79c78",backgroundColor:"transparent",borderDash:[5,5],pointRadius:2,borderWidth:1.5,spanGaps:false});
+        document.getElementById("radarSeriesLegend").innerHTML =
+          '<span><i class="radar-key"></i>本期</span>' + (radarPrevious ? '<span><i class="radar-key prior"></i>上次观察</span>' : '');
+        const datasets = [{label:"本期代理评分",data:rows.map(r=>r.score),borderColor:"#315a68",backgroundColor:"rgba(49,90,104,.16)",pointBackgroundColor:"#354951",pointBorderColor:"#5d7580",pointBorderWidth:3,pointRadius:5,pointHoverRadius:8,borderWidth:3,spanGaps:false}];
+        if (radarPrevious) datasets.push({label:"上次观察",data:radarPrevious.scores,borderColor:"#8b6436",backgroundColor:"transparent",borderDash:[5,5],pointRadius:2,borderWidth:1.5,spanGaps:false});
         const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
         const animate = !reduced && (replay || radarAnimationTime !== timestamp);
         radarAnimationTime = timestamp;
