@@ -31,6 +31,17 @@ from src.ingestion.market_data import MarketSnapshot
 from src.models.schemas import CalendarEvent, MacroChainId, MacroDimItem
 
 logger = logging.getLogger(__name__)
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_SEC_EXCERPT_MAX_BYTES = 65_536
+
+
+def _http_timeout(timeout_sec: float) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=min(4.0, timeout_sec),
+        read=min(8.0, timeout_sec),
+        write=min(5.0, timeout_sec),
+        pool=min(5.0, timeout_sec),
+    )
 
 _HIGH_SIGNAL_FORMS = {"8-K", "10-Q", "10-K", "S-1", "425", "SC 13D", "SC 13G", "6-K"}
 _FRED_SERIES: tuple[str, ...] = ("BAMLH0A0HYM2", "BAMLH0A0HYM2EY", "DGS10", "MORTGAGE30US")
@@ -115,15 +126,20 @@ async def _fetch_cik_submissions(
     sym: str,
     cik: str,
     cutoff_date: date,
+    *,
+    req_timeout_sec: float = 8.5,
 ) -> list[SecFilingSignal]:
     """Fetch recent high-signal filings for one CIK from data.sec.gov."""
     url = FEED_SOURCES["sec_edgar_submissions"].url.format(cik10=cik)
     async with sem:
         for attempt in range(2):
             try:
-                resp = await client.get(
-                    url,
-                    headers={"User-Agent": SEC_USER_AGENT, "Accept": "application/json"},
+                resp = await asyncio.wait_for(
+                    client.get(
+                        url,
+                        headers={"User-Agent": SEC_USER_AGENT, "Accept": "application/json"},
+                    ),
+                    timeout=req_timeout_sec,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -181,6 +197,8 @@ async def _fetch_cik_submissions(
                         if len(out) >= 3:
                             break
                     return out
+                if resp.status_code not in _RETRYABLE_HTTP_STATUSES:
+                    break
             except Exception as exc:
                 logger.debug("SEC submissions %s attempt %d failed: %s", sym, attempt + 1, exc)
             if attempt == 0:
@@ -189,16 +207,36 @@ async def _fetch_cik_submissions(
 
 
 async def _fetch_sec_doc_excerpt(client: httpx.AsyncClient, doc_url: str) -> str:
-    """Fetch a bounded first-hand text excerpt from a recent SEC 8-K/6-K primary document."""
-    try:
-        resp = await client.get(
+    """Fetch a byte-bounded first-hand text excerpt from a recent SEC 8-K/6-K primary document."""
+    doc_timeout = httpx.Timeout(connect=3.0, read=5.0, write=4.0, pool=4.0)
+
+    async def _read_head() -> str:
+        async with client.stream(
+            "GET",
             doc_url,
             headers={"User-Agent": SEC_USER_AGENT, "Accept": "text/html,text/plain,*/*"},
-            timeout=6.0,
-        )
-        if resp.status_code != 200 or not resp.text:
+            timeout=doc_timeout,
+        ) as resp:
+            if resp.status_code != 200:
+                return ""
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in resp.aiter_bytes(chunk_size=8192):
+                if not chunk:
+                    continue
+                remaining = _SEC_EXCERPT_MAX_BYTES - received
+                if remaining <= 0:
+                    break
+                chunks.append(chunk[:remaining])
+                received += min(len(chunk), remaining)
+                if received >= _SEC_EXCERPT_MAX_BYTES:
+                    break
+            return b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+
+    try:
+        raw_head = await asyncio.wait_for(_read_head(), timeout=6.5)
+        if not raw_head:
             return ""
-        raw_head = resp.text[:65000]
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
             clean = " ".join(BeautifulSoup(raw_head, "lxml").get_text(" ").split())
@@ -211,15 +249,26 @@ async def _fetch_sec_doc_excerpt(client: httpx.AsyncClient, doc_url: str) -> str
         return ""
 
 
-async def _fetch_fred_metrics(client: httpx.AsyncClient) -> dict[str, tuple[str, float]]:
+async def _fetch_fred_metrics(
+    client: httpx.AsyncClient,
+    *,
+    as_of_date: date | None = None,
+) -> dict[str, tuple[str, float]]:
     """Fetch official latest observations from public FRED CSV endpoints (no API key)."""
     sem = asyncio.Semaphore(4)
+    fred_timeout = httpx.Timeout(connect=3.0, read=5.0, write=4.0, pool=4.0)
+    cosd = (as_of_date - timedelta(days=90)).isoformat() if as_of_date is not None else None
 
     async def _one(series_id: str) -> tuple[str, tuple[str, float] | None]:
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+        if cosd:
+            url = f"{url}&cosd={cosd}"
         try:
             async with sem:
-                resp = await client.get(url, headers={"User-Agent": SEC_USER_AGENT}, timeout=6.0)
+                resp = await asyncio.wait_for(
+                    client.get(url, headers={"User-Agent": SEC_USER_AGENT}, timeout=fred_timeout),
+                    timeout=7.0,
+                )
             if resp.status_code != 200:
                 return series_id, None
             for line in reversed(resp.text.strip().splitlines()):
@@ -244,8 +293,12 @@ async def _fetch_fred_metrics(client: httpx.AsyncClient) -> dict[str, tuple[str,
 async def _fetch_edgar_current_atom(client: httpx.AsyncClient) -> list[dict[str, str]]:
     """Fetch recent market-wide 8-K / S-1 / 425 / 13D entries from SEC Atom feed."""
     url = FEED_SOURCES["sec_edgar_current_rss"].url
+    atom_timeout = httpx.Timeout(connect=3.5, read=6.0, write=4.0, pool=4.0)
     try:
-        resp = await client.get(url, headers={"User-Agent": SEC_USER_AGENT})
+        resp = await asyncio.wait_for(
+            client.get(url, headers={"User-Agent": SEC_USER_AGENT}, timeout=atom_timeout),
+            timeout=8.0,
+        )
         if resp.status_code != 200:
             return []
         parsed = feedparser.parse(resp.text)
@@ -606,19 +659,34 @@ async def fetch_primary_signals(
     if ts_now.tzinfo is None:
         ts_now = ts_now.replace(tzinfo=timezone.utc)
 
-    cutoff_date = ts_now.astimezone(TZ_ET).date() - timedelta(days=45)
-    sem = asyncio.Semaphore(2)
+    today_et = ts_now.astimezone(TZ_ET).date()
+    cutoff_date = today_et - timedelta(days=45)
+    sem = asyncio.Semaphore(3)
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    req_budget = min(timeout_sec, 8.5)
 
-    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=_http_timeout(timeout_sec),
+        limits=limits,
+        follow_redirects=True,
+    ) as client:
         sec_tasks = [
-            _fetch_cik_submissions(client, sem, sym, cik, cutoff_date)
+            _fetch_cik_submissions(client, sem, sym, cik, cutoff_date, req_timeout_sec=req_budget)
             for sym, cik in SEC_TRACKED_CIKS.items()
         ]
         atom_task = asyncio.create_task(_fetch_edgar_current_atom(client))
-        fred_task = asyncio.create_task(_fetch_fred_metrics(client))
+        fred_task = asyncio.create_task(_fetch_fred_metrics(client, as_of_date=today_et))
         sec_batches = await asyncio.gather(*sec_tasks)
-        edgar_stream = await atom_task
-        fred_metrics = await fred_task
+        try:
+            edgar_stream = await asyncio.wait_for(atom_task, timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.debug("SEC current Atom stream timed out; continuing with CIK filings")
+            edgar_stream = []
+        try:
+            fred_metrics = await asyncio.wait_for(fred_task, timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.debug("FRED metrics timed out; falling back to market proxies")
+            fred_metrics = {}
 
     sec_filings = sorted(
         [f for batch in sec_batches for f in batch],

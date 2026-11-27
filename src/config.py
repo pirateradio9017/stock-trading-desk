@@ -522,3 +522,64 @@ def format_utc_iso(dt: datetime | None = None) -> str:
     Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
     """
     return _to_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+SCHEDULE_BASELINE_CRON = "13 */2 * * *"
+SCHEDULE_ACTIVE_ODD_CRON = "13 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
+SCHEDULE_REBALANCE_CRON = "32 13,16 * * 1-5"
+
+
+@dataclass(frozen=True)
+class ScheduleSlotDecision:
+    """Resolved CI schedule trigger decision (stdlib-only for pre-install step)."""
+
+    run: bool
+    catchup_rebalance: bool
+    session: Literal["PRE_MARKET", "INTRADAY", "AFTER_HOURS", "OFF_HOURS", "HOLIDAY"]
+    window: Literal[
+        "HOLIDAY_LOCK",
+        "INTRADAY_LOCK",
+        "POST_CLOSE_SETTLE",
+        "REBALANCE_WINDOW",
+        "PRE_MARKET",
+        "OFF_HOURS",
+    ]
+    reason: str
+
+
+def resolve_research_schedule(
+    event_name: str,
+    schedule: str,
+    dt: datetime | None = None,
+) -> ScheduleSlotDecision:
+    """Resolve whether a CI trigger should execute and whether delayed rebalance catchup applies.
+
+    Naive ``datetime`` inputs are interpreted as UTC; ``None`` uses the current UTC time.
+    """
+    now_utc = _to_utc(dt)
+    et = now_utc.astimezone(TZ_ET)
+    session = get_market_session(now_utc)
+    window = get_research_window(now_utc)
+    sched = (schedule or "").strip()
+
+    if event_name == "workflow_dispatch":
+        return ScheduleSlotDecision(True, False, session, window, "workflow_dispatch")
+
+    if sched == SCHEDULE_BASELINE_CRON:
+        return ScheduleSlotDecision(True, False, session, window, "baseline_2h")
+
+    if sched == SCHEDULE_REBALANCE_CRON:
+        if not is_us_trading_day(et.date()):
+            return ScheduleSlotDecision(False, False, session, window, "non_trading_day")
+        if window == "REBALANCE_WINDOW":
+            return ScheduleSlotDecision(True, False, session, window, "rebalance_window")
+        close_h = get_market_close(et.date()).hour
+        # Tolerate up to ~133 min of CI cron queue delay after close_h:32 ET,
+        # while ending strictly before 16:32 ET on 13:00 ET early-close days.
+        if time(close_h + 1, 0) <= et.time() < time(close_h + 2, 45):
+            return ScheduleSlotDecision(True, True, session, window, "rebalance_catchup")
+        return ScheduleSlotDecision(False, False, session, window, "outside_rebalance_window")
+
+    if session in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"}:
+        return ScheduleSlotDecision(True, False, session, window, "active_us_hourly")
+    return ScheduleSlotDecision(False, False, session, window, "off_hours_skip")

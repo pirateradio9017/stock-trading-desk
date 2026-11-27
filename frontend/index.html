@@ -138,10 +138,26 @@
 
     .sync-dot.busy {
       background: var(--ochre);
+      animation: syncPulse 1.2s ease-in-out infinite;
+    }
+
+    .sync-dot.cached {
+      background: var(--slate);
     }
 
     .sync-dot.err {
       background: var(--terra);
+    }
+
+    @keyframes syncPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .sync-dot.busy {
+        animation: none;
+      }
     }
 
     .btn {
@@ -1111,6 +1127,15 @@
         live: null,
         state: null,
         stateError: "",
+        stateSource: "none",
+        liveSource: "none",
+        stateBusy: false,
+        liveBusy: false,
+        stateErr: "",
+        liveErr: "",
+        renderedStateKey: "",
+        renderedLiveKey: "",
+        renderedLiveHadTiles: false,
       };
 
       const MAINLINE_PALETTE = [
@@ -1605,40 +1630,85 @@
         } : null;
       }
 
-      function updateSyncPill(busy, errMsg) {
+      function parseCnTimestampMs(tsStr) {
+        if (!tsStr || typeof tsStr !== "string") return NaN;
+        const match = tsStr.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}) UTC\+8$/);
+        if (!match) return NaN;
+        return Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}+08:00`);
+      }
+
+      function updateSyncPill() {
         const pillText = document.getElementById("liveTimeText");
         const dot = document.getElementById("liveSyncDot");
         if (!pillText || !dot) return;
-        dot.classList.remove("busy", "err");
-        if (busy) {
-          dot.classList.add("busy");
-          pillText.textContent = "正在读取行情与最新研究...";
-          return;
-        }
-        if (errMsg) {
-          dot.classList.add("err");
-          pillText.textContent = errMsg;
-          return;
-        }
+        dot.classList.remove("busy", "cached", "err");
+
+        const anyBusy = STORE.stateBusy || STORE.liveBusy;
+        const hasState = Boolean(STORE.state);
+        const hasLive = Boolean(STORE.live);
+        const stateFromCache = hasState && STORE.stateSource === "cache";
+        const liveFromCache = hasLive && STORE.liveSource === "cache";
+        const anyCache = stateFromCache || liveFromCache;
+        const anyErr = Boolean(STORE.stateErr || STORE.liveErr);
+
         const parts = [];
-        if (STORE.live && STORE.live.updatedAt) {
-          parts.push("行情检查 " + STORE.live.updatedAt);
-          parts.push(sessionLabelCn(STORE.live.marketSession));
-        } else if (STORE.state && STORE.state.meta && STORE.state.meta.updated_at_short) {
-          parts.push("已同步 " + STORE.state.meta.updated_at_short);
-        } else {
-          parts.push("已同步");
-        }
-        const researchTime = STORE.state?.serverSyncedAt || "";
-        parts.push("研究生成 " + (researchTime || "未知"));
-        const match = researchTime.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}) UTC\+8$/);
-        const researchMs = match ? Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}+08:00`) : NaN;
-        const closedSession = STORE.live && (STORE.live.marketSession === "HOLIDAY" || STORE.live.marketSession === "OFF_HOURS");
-        const staleLimitMs = (closedSession ? 5 : 3) * 60 * 60 * 1000;
-        if (!Number.isFinite(researchMs) || Date.now() - researchMs > staleLimitMs) {
-          parts.push("研究更新延迟，请检查后台任务");
+
+        if (anyBusy) {
+          dot.classList.add("busy");
+          if (!hasState && !hasLive) {
+            pillText.textContent = "正在同步实时行情与最新研究...";
+            return;
+          }
+          if (stateFromCache && liveFromCache) {
+            parts.push("本地缓存 · 正在后台同步");
+          } else if (STORE.stateBusy && STORE.liveBusy) {
+            parts.push("同步中");
+          } else if (STORE.liveBusy) {
+            parts.push(liveFromCache ? "行情缓存 · 实时同步中" : "实时行情同步中");
+          } else if (STORE.stateBusy) {
+            parts.push(stateFromCache ? "研究缓存 · 最新研究同步中" : "最新研究同步中");
+          }
+        } else if (!hasState && !hasLive) {
           dot.classList.add("err");
+          pillText.textContent = STORE.stateErr || STORE.liveErr || "数据同步失败，请点击立即刷新重试";
+          return;
+        } else if (anyErr) {
+          const errNotes = [];
+          if (STORE.liveErr) errNotes.push(hasLive ? `${STORE.liveErr}(沿用已有报价)` : STORE.liveErr);
+          if (STORE.stateErr) errNotes.push(hasState ? `${STORE.stateErr}(显示已有研究)` : STORE.stateErr);
+          parts.push(errNotes.join(" · "));
+          dot.classList.add((STORE.stateErr && STORE.liveErr) || !hasState ? "err" : "busy");
+        } else if (anyCache) {
+          parts.push("本地缓存");
+          dot.classList.add("cached");
         }
+
+        if (hasLive && STORE.live.updatedAt) {
+          if (!anyBusy || !STORE.liveBusy) {
+            parts.push((liveFromCache ? "缓存行情 " : "行情检查 ") + STORE.live.updatedAt);
+            parts.push(sessionLabelCn(STORE.live.marketSession));
+          } else if (!liveFromCache) {
+            parts.push("行情 " + STORE.live.updatedAt);
+          }
+        } else if (!hasLive && !STORE.liveBusy && hasState && STORE.state.meta && STORE.state.meta.updated_at_short) {
+          parts.push("已同步 " + STORE.state.meta.updated_at_short);
+        }
+
+        if (hasState) {
+          const researchTime = STORE.state.serverSyncedAt || "";
+          parts.push("研究生成 " + (researchTime || "未知"));
+          if (!anyBusy) {
+            const researchMs = parseCnTimestampMs(researchTime);
+            const closedSession = STORE.live && (STORE.live.marketSession === "HOLIDAY" || STORE.live.marketSession === "OFF_HOURS");
+            const staleLimitMs = (closedSession ? 5 : 3) * 60 * 60 * 1000;
+            if (!Number.isFinite(researchMs) || Date.now() - researchMs > staleLimitMs) {
+              parts.push("研究更新延迟，请检查后台任务");
+              dot.classList.remove("busy", "cached");
+              dot.classList.add("err");
+            }
+          }
+        }
+
         pillText.textContent = parts.join(" · ");
       }
 
@@ -1647,23 +1717,73 @@
         hour: "2-digit", minute: "2-digit", hourCycle: "h23"
       });
 
+      function updateQuoteRibbonTime() {
+        const time = document.getElementById("quoteRibbonTime");
+        if (!time) return;
+        if (STORE.live) {
+          if (STORE.liveSource === "cache" && STORE.liveBusy) {
+            time.textContent = "本地缓存 · 同步中 · 报价时间为美东";
+          } else if (STORE.liveSource === "cache" && STORE.liveErr) {
+            time.textContent = "缓存报价 · " + STORE.liveErr + " · 报价时间为美东";
+          } else if (STORE.liveSource === "cache") {
+            time.textContent = "本地缓存 · 报价时间为美东";
+          } else if (STORE.liveErr) {
+            time.textContent = sessionLabelCn(STORE.live.marketSession) + " · 沿用上次报价";
+          } else {
+            time.textContent = sessionLabelCn(STORE.live.marketSession) + " · 报价时间为美东";
+          }
+        } else if (STORE.liveBusy) {
+          time.textContent = "正在同步实时行情";
+        } else if (STORE.liveErr) {
+          time.textContent = STORE.liveErr;
+        } else {
+          time.textContent = "等待行情";
+        }
+      }
+
       function renderQuoteRibbon() {
         const el = document.getElementById("quoteRibbon");
-        const time = document.getElementById("quoteRibbonTime");
+        if (!el) return;
+        updateQuoteRibbonTime();
         const prices = quoteMap();
-        time.textContent = STORE.live ? sessionLabelCn(STORE.live.marketSession) + " · 报价时间为美东" : "等待行情";
         const symbols = [...new Set([
           "SPY", "QQQ", "^VIX", "^TNX", "BTC-USD",
           ...(STORE.state?.mainlines || []).map(row => row.anchor_sym),
           "TSM", "AVGO", "LMT", "XLE", "ITB", "ASML"
         ])].slice(0, 12);
         const quotes = symbols.map(symbol => prices[symbol]).filter(item => item && finiteOrNull(item.price) !== null);
-        el.innerHTML = quotes.length ? quotes.map(quote => {
-          const ts = Date.parse(quote.tsUtc);
-          const date = Number.isFinite(ts) ? `<time datetime="${escapeHtml(quote.tsUtc)}">${escapeHtml(quoteTimeEt.format(ts))}</time>` : "";
-          return `<div class="quote-tile"><strong>${escapeHtml(quote.sym)}</strong>${escapeHtml(fmtPrice(quote.sym, quote.price))}
-            <span class="badge ${chgClass(quote.chg)}">${escapeHtml(fmtChg(quote.chg))}</span>${date}</div>`;
-        }).join("") : '<div class="empty-box">暂无可显示行情</div>';
+        STORE.renderedLiveHadTiles = quotes.length > 0;
+        if (quotes.length) {
+          el.innerHTML = quotes.map(quote => {
+            const ts = Date.parse(quote.tsUtc);
+            const date = Number.isFinite(ts) ? `<time datetime="${escapeHtml(quote.tsUtc)}">${escapeHtml(quoteTimeEt.format(ts))}</time>` : "";
+            return `<div class="quote-tile"><strong>${escapeHtml(quote.sym)}</strong>${escapeHtml(fmtPrice(quote.sym, quote.price))}
+              <span class="badge ${chgClass(quote.chg)}">${escapeHtml(fmtChg(quote.chg))}</span>${date}</div>`;
+          }).join("");
+        } else if (STORE.liveBusy) {
+          el.innerHTML = '<div class="empty-box">正在同步实时行情...</div>';
+        } else if (STORE.liveErr) {
+          el.innerHTML = `<div class="empty-box">${escapeHtml(STORE.liveErr)}，请点击上方「立即刷新」重试</div>`;
+        } else {
+          el.innerHTML = '<div class="empty-box">暂无可显示行情</div>';
+        }
+      }
+
+      function patchHeroKpis() {
+        const el = document.getElementById("heroContainer");
+        if (!el) return;
+        const qm = quoteMap();
+        el.querySelectorAll(".kpi-card[data-kpi]").forEach((card) => {
+          const sym = card.getAttribute("data-kpi") || "";
+          const q = qm[sym] || null;
+          const valEl = card.querySelector(".kpi-val");
+          const badgeEl = card.querySelector(".badge");
+          if (valEl) valEl.textContent = q ? fmtPrice(sym, q.price) : "--";
+          if (badgeEl) {
+            badgeEl.textContent = q ? fmtChg(q.chg) : "--";
+            badgeEl.className = "badge " + (q ? chgClass(q.chg) : "chg-flat");
+          }
+        });
       }
 
       function renderHero() {
@@ -1753,7 +1873,7 @@
         watch: ["slate", "#596966"]
       };
 
-      function renderSetupRadar() {
+      function renderSetupRadar(skipPlot = false) {
         const setupRows = Array.isArray(STORE.state?.setups) ? STORE.state.setups : [];
         const categories = document.getElementById("setupCategories");
         const coverage = document.getElementById("setupCoverage");
@@ -1789,7 +1909,8 @@
           : visible.length ? '<div class="empty-box">具备两项数据的标的会显示在散点图，现有数据见下方卡片。</div>' : "";
         cards.innerHTML = visible.length ? visible.map((row, index) => renderSetupCard(row, index)).join("")
           : `<div class="empty-box" style="grid-column:1 / -1">${setupRows.length ? "当前筛选下暂无标的" : "等待下一轮研究同步"}</div>`;
-        drawSetupPlot(points);
+        setupPoints = points;
+        if (!skipPlot) drawSetupPlot(points);
       }
 
       function renderSetupCard(row, index) {
@@ -1905,10 +2026,10 @@
         const curText = cur !== null ? fmtPrice(anchor, cur) : "--";
 
         return `
-          <div class="ruler-wrap" data-ruler-sym="${escapeHtml(anchor)}">
+          <div class="ruler-wrap" data-ruler-sym="${escapeHtml(anchor)}" data-accel="${accel !== null ? accel : ""}" data-flip="${flip !== null ? flip : ""}">
             <div class="ruler-head">
               <span>锚定标的 <strong>${escapeHtml(anchor)}</strong></span>
-              <span>现价 <strong>${escapeHtml(curText)}</strong></span>
+              <span>现价 <strong class="ruler-cur">${escapeHtml(curText)}</strong></span>
             </div>
             <div class="ruler-track">
               <div class="ruler-dot" style="left: ${pctStr}%;"></div>
@@ -1966,7 +2087,7 @@
               <span class="stock-chip" data-sym="${escapeHtml(sym)}">
                 <strong>${escapeHtml(sym)}</strong>
                 <span>${escapeHtml(name)}</span>
-                <span>${escapeHtml(px)}</span>
+                <span class="chip-px">${escapeHtml(px)}</span>
                 <span class="chip-chg ${cls}">${escapeHtml(chg)}</span>
               </span>
             `;
@@ -1976,7 +2097,7 @@
           const toneCls = getToneClass(m.action_tone);
 
           return `
-            <article class="ed-card" data-mainline-id="${escapeHtml(m.id)}">
+            <article class="ed-card${STORE.mainlineFilter === m.id ? " selected" : ""}" data-mainline-id="${escapeHtml(m.id)}">
               <div class="ml-head">
                 <div class="ml-title-wrap">
                   <div class="ml-id-row">
@@ -2011,8 +2132,51 @@
             </article>
           `;
         }).join("");
+      }
 
-        renderMainlineSparks();
+      function patchMainlinesLive() {
+        const container = document.getElementById("mainlinesContainer");
+        if (!container) return;
+        const qm = quoteMap();
+        container.querySelectorAll(".stock-chip[data-sym]").forEach((chip) => {
+          const sym = chip.getAttribute("data-sym") || "";
+          const q = qm[sym] || null;
+          const pxEl = chip.querySelector(".chip-px");
+          const chgEl = chip.querySelector(".chip-chg");
+          if (pxEl) pxEl.textContent = q ? fmtPrice(sym, q.price) : "--";
+          if (chgEl) {
+            chgEl.textContent = q ? fmtChg(q.chg) : "--";
+            chgEl.className = "chip-chg " + (q ? chgClass(q.chg) : "chg-flat");
+          }
+        });
+        container.querySelectorAll(".ruler-wrap[data-ruler-sym]").forEach((wrap) => {
+          const anchor = wrap.getAttribute("data-ruler-sym") || "";
+          const q = qm[anchor] || null;
+          const cur = q ? finiteOrNull(q.price) : null;
+          const accelRaw = wrap.getAttribute("data-accel");
+          const flipRaw = wrap.getAttribute("data-flip");
+          const accel = accelRaw !== "" && accelRaw !== null ? finiteOrNull(Number(accelRaw)) : null;
+          const flip = flipRaw !== "" && flipRaw !== null ? finiteOrNull(Number(flipRaw)) : null;
+          let leftVal = 0;
+          let rightVal = 0;
+          if (accel !== null && flip !== null && accel >= flip) {
+            leftVal = flip;
+            rightVal = accel;
+          } else {
+            leftVal = accel ?? 0;
+            rightVal = flip ?? 0;
+          }
+          let ratio = 0.5;
+          const span = rightVal - leftVal;
+          if (cur !== null && accel !== null && flip !== null && Math.abs(span) > 1e-9) {
+            const raw = (cur - leftVal) / span;
+            ratio = Math.max(0.04, Math.min(0.96, raw));
+          }
+          const curEl = wrap.querySelector(".ruler-cur");
+          const dotEl = wrap.querySelector(".ruler-dot");
+          if (curEl) curEl.textContent = cur !== null ? fmtPrice(anchor, cur) : "--";
+          if (dotEl) dotEl.style.left = (ratio * 100).toFixed(2) + "%";
+        });
       }
 
       function renderMainlineSparks() {
@@ -2446,7 +2610,7 @@
       function renderMacroRadar(replay = false) {
         const rows = radarRows();
         const timestamp = STORE.state?.serverSyncedAt || "";
-        if (timestamp && radarSnapshot?.time !== timestamp) {
+        if (STORE.stateSource === "network" && timestamp && radarSnapshot?.time !== timestamp) {
           if (radarSnapshot?.time && Array.isArray(radarSnapshot.scores) && radarSnapshot.scores.length === 5 && radarSnapshot.scores.every(v => v === null || (Number.isFinite(v) && v >= 0 && v <= 100))) radarPrevious = radarSnapshot;
           radarSnapshot = {time: timestamp, scores: rows.map(r => r.score)};
           try { localStorage.setItem("desk-radar-v1", JSON.stringify(radarSnapshot)); } catch (_) {}
@@ -2483,18 +2647,110 @@
       }
       document.getElementById('radarReplay').onclick = () => renderMacroRadar(true);
 
-      function renderChartsForTab(tabName) {
+      const dirtyCharts = {
+        chains: true,
+        candidates: true,
+        linkage: true,
+        macro: true,
+      };
+
+      function markAllChartsDirty() {
+        dirtyCharts.chains = true;
+        dirtyCharts.candidates = true;
+        dirtyCharts.linkage = true;
+        dirtyCharts.macro = true;
+      }
+
+      function ensureTabCharts(tabName, force = false) {
+        if (!STORE.state) return;
+        if (!force && !dirtyCharts[tabName]) return;
         if (tabName === "chains") {
           renderMainlineSparks();
-          renderMomentum();
-          renderSetupRadar();
-          if (document.getElementById("mainlineTrend").open) renderOverviewChart();
+          drawSetupPlot();
+          if (document.getElementById("mainlineTrend")?.open) renderOverviewChart();
+          dirtyCharts.chains = false;
         } else if (tabName === "candidates") {
           renderCandidateCharts();
+          dirtyCharts.candidates = false;
         } else if (tabName === "linkage") {
           renderLinkageChart();
+          dirtyCharts.linkage = false;
         } else if (tabName === "macro") {
           renderMacroRadar();
+          dirtyCharts.macro = false;
+        }
+      }
+
+      function getStateKey(state) {
+        if (!state) return "";
+        const meta = state.meta || {};
+        const mlSig = Array.isArray(state.mainlines)
+          ? state.mainlines.map((m) => `${m.id}:${m.score}:${m.action}:${m.anchor_sym}:${(m.spark || []).length}`).join(",")
+          : "";
+        const candSig = Array.isArray(state.candidates)
+          ? state.candidates.map((c) => `${c.id}:${c.tier}:${c.r5}:${c.r20}`).join(",")
+          : "";
+        const macroSig = Array.isArray(state.macro)
+          ? state.macro.map((m) => `${m.chain_id}:${m.score}:${m.state}`).join(",")
+          : "";
+        const setupCount = Array.isArray(state.setups) ? state.setups.length : 0;
+        const histCount = Array.isArray(state.history) ? state.history.length : 0;
+        const calCount = Array.isArray(state.calendar) ? state.calendar.length : 0;
+        return [
+          state.serverSyncedAt || "",
+          meta.updated_at || "",
+          meta.headline || "",
+          meta.regime || "",
+          meta.stance || "",
+          mlSig,
+          candSig,
+          macroSig,
+          setupCount,
+          histCount,
+          calCount,
+        ].join("|");
+      }
+
+      function getLiveKey(live) {
+        if (!live) return "";
+        const quotes = Array.isArray(live.quotes)
+          ? live.quotes.map((q) => `${q.sym}:${q.price}:${q.chg}:${q.tsUtc || ""}`).join(",")
+          : "";
+        return `${live.updatedAt || ""}|${live.marketSession || ""}|${live.count || 0}|${quotes}`;
+      }
+
+      function applyStateToDom(force = false) {
+        const key = getStateKey(STORE.state);
+        if (!force && key && key === STORE.renderedStateKey) {
+          if (STORE.stateSource === "network" && STORE.activeTab === "macro" && STORE.state?.serverSyncedAt && radarSnapshot?.time !== STORE.state.serverSyncedAt) {
+            renderMacroRadar(false);
+          }
+          return;
+        }
+        STORE.renderedStateKey = key;
+        renderQuoteRibbon();
+        renderHero();
+        renderMomentum();
+        renderMainlines();
+        renderSetupRadar(true);
+        renderCandidates();
+        renderLinkage();
+        renderMacro();
+        markAllChartsDirty();
+        ensureTabCharts(STORE.activeTab, true);
+      }
+
+      function applyLiveToDom(force = false) {
+        const key = getLiveKey(STORE.live);
+        updateQuoteRibbonTime();
+        if (!force && key && key === STORE.renderedLiveKey && STORE.renderedLiveHadTiles) {
+          return;
+        }
+        STORE.renderedLiveKey = key;
+        renderQuoteRibbon();
+        if (STORE.renderedStateKey) {
+          patchHeroKpis();
+          patchMainlinesLive();
         }
       }
 
@@ -2512,7 +2768,7 @@
           panel.classList.toggle("active", panel.id === "panel-" + tabName);
         });
         if (returnToTab) document.getElementById("panel-" + tabName).scrollIntoView({block: "start"});
-        renderChartsForTab(tabName);
+        ensureTabCharts(tabName);
       }
 
       function togglePolarity() {
@@ -2522,107 +2778,274 @@
         if (btn) {
           btn.textContent = STORE.greenUp ? "绿涨红跌" : "红涨绿跌";
         }
-        renderQuoteRibbon();
-        renderHero();
-        renderMainlines();
-        renderCandidates();
-        renderLinkage();
-        renderChartsForTab(STORE.activeTab);
-      }
-
-      const requestVersions = Object.create(null);
-      async function fetchJsonSafe(url) {
-        const key = url.split("?")[0];
-        const version = requestVersions[key] = (requestVersions[key] || 0) + 1;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15000);
-        try {
-        const resp = await fetch(url, { cache: "no-store", signal: controller.signal });
-        if (!resp.ok) {
-          const err = new Error(`HTTP ${resp.status}`);
-          err.status = resp.status;
-          throw err;
-        }
-        const data = await resp.json();
-        if (version !== requestVersions[key]) throw Object.assign(new Error("Superseded request"), { superseded: true });
-        if (!data || typeof data !== "object") throw new Error("Invalid API payload");
-        return data;
-        } finally { clearTimeout(timer); }
-      }
-
-      let refreshing = false;
-      async function fetchAll(force) {
-        if (refreshing) return;
-        refreshing = true;
-        const btn = document.getElementById("btnRefreshAll");
-        if (btn) btn.disabled = true;
-        const isInitialLoad = !force && !STORE.state && !STORE.live;
-        if (!isInitialLoad) {
-          updateSyncPill(true, "");
-        }
-
-        const qs = force ? `?force=1&t=${Date.now()}` : `?t=${Date.now()}`;
-        let liveDone = false;
-        let stateDone = false;
-        let liveOk = false;
-        let stateOk = false;
-
-        const maybeRenderLiveState = () => {
-          if (!liveDone || !stateDone) return;
-          renderQuoteRibbon();
-          renderHero();
-          renderMainlines();
-          renderCandidates();
+        if (STORE.state) {
           renderLinkage();
-          renderMacro();
-          renderChartsForTab(STORE.activeTab);
-          {
-            if (!stateOk || !liveOk) {
-              updateSyncPill(false, "部分数据同步失败 · 显示已有结果");
-            } else {
-              updateSyncPill(false, "");
+          dirtyCharts.chains = true;
+          ensureTabCharts(STORE.activeTab);
+        }
+      }
+
+      const BOOT_CACHE_KEY = "desk-boot-cache-v1";
+      const BOOT_CACHE_VERSION = 1;
+      const BOOT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+      const STATE_TIMEOUT_MS = 8000;
+      const LIVE_TIMEOUT_MS = 8500;
+      const LIVE_FORCE_TIMEOUT_MS = 10000;
+      const LIVE_POLL_MS = 60000;
+      const LIVE_POLL_CLOSED_MS = 120000;
+      const STATE_POLL_MS = 180000;
+      const VISIBILITY_COOLDOWN_MS = 5000;
+
+      function isValidStatePayload(obj) {
+        return Boolean(
+          obj &&
+          typeof obj === "object" &&
+          obj.meta &&
+          typeof obj.meta === "object" &&
+          Array.isArray(obj.mainlines)
+        );
+      }
+
+      function isValidLivePayload(obj) {
+        return Boolean(
+          obj &&
+          typeof obj === "object" &&
+          Array.isArray(obj.quotes)
+        );
+      }
+
+      function loadBootCache() {
+        try {
+          const raw = localStorage.getItem(BOOT_CACHE_KEY);
+          if (!raw) return false;
+          const parsed = JSON.parse(raw);
+          if (!parsed || parsed.v !== BOOT_CACHE_VERSION) return false;
+          const savedAt = Number(parsed.savedAt);
+          const now = Date.now();
+          if (!Number.isFinite(savedAt) || savedAt > now + 60000 || now - savedAt > BOOT_CACHE_MAX_AGE_MS) {
+            return false;
+          }
+          let hydrated = false;
+          if (isValidStatePayload(parsed.state)) {
+            STORE.state = parsed.state;
+            STORE.stateSource = "cache";
+            hydrated = true;
+          }
+          if (isValidLivePayload(parsed.live)) {
+            STORE.live = parsed.live;
+            STORE.liveSource = "cache";
+            hydrated = true;
+          }
+          return hydrated;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function saveBootCache() {
+        if (STORE.stateSource !== "network" && STORE.liveSource !== "network") return;
+        try {
+          const payload = {
+            v: BOOT_CACHE_VERSION,
+            savedAt: Date.now(),
+            state: isValidStatePayload(STORE.state) ? STORE.state : null,
+            live: isValidLivePayload(STORE.live) ? STORE.live : null,
+          };
+          if (!payload.state && !payload.live) return;
+          localStorage.setItem(BOOT_CACHE_KEY, JSON.stringify(payload));
+        } catch (_) {}
+      }
+
+      const requestVersions = { state: 0, live: 0 };
+      const inFlight = { state: null, live: null };
+
+      async function fetchEndpointJson(key, basePath, { force = false, timeoutMs = 8000 } = {}) {
+        if (!force && inFlight[key]) {
+          return { skipped: true };
+        }
+        if (force && inFlight[key]) {
+          try { inFlight[key].controller.abort(); } catch (_) {}
+        }
+        const version = ++requestVersions[key];
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+        inFlight[key] = { controller, version, force };
+
+        const url = force ? `${basePath}?force=1` : basePath;
+        const fetchOpts = force
+          ? { cache: "no-store", signal: controller.signal }
+          : { signal: controller.signal };
+
+        try {
+          const resp = await fetch(url, fetchOpts);
+          if (!resp.ok) {
+            const err = new Error(`HTTP ${resp.status}`);
+            err.status = resp.status;
+            throw err;
+          }
+          const data = await resp.json();
+          if (version !== requestVersions[key]) {
+            return { superseded: true };
+          }
+          if (!data || typeof data !== "object") {
+            throw new Error("Invalid API payload");
+          }
+          return { data };
+        } catch (err) {
+          if (version !== requestVersions[key]) {
+            return { superseded: true };
+          }
+          if (timedOut) {
+            const timeoutErr = new Error("Request timeout");
+            timeoutErr.timedOut = true;
+            throw timeoutErr;
+          }
+          throw err;
+        } finally {
+          clearTimeout(timer);
+          if (inFlight[key] && inFlight[key].version === version) {
+            inFlight[key] = null;
+          }
+        }
+      }
+
+      let lastStateOkMs = 0;
+      let lastLiveOkMs = 0;
+      let lastStateAttemptMs = 0;
+      let lastLiveAttemptMs = 0;
+
+      async function fetchState({ force = false } = {}) {
+        if (!force && inFlight.state) return false;
+        lastStateAttemptMs = Date.now();
+        STORE.stateBusy = true;
+        if (force) STORE.stateErr = "";
+        updateSyncPill();
+        try {
+          const res = await fetchEndpointJson("state", "/api/state", {
+            force,
+            timeoutMs: STATE_TIMEOUT_MS,
+          });
+          if (res.skipped || res.superseded) return false;
+          const val = res.data;
+          if (!isValidStatePayload(val)) {
+            throw new Error("Invalid state payload");
+          }
+          if (!force && STORE.stateSource === "network" && STORE.state) {
+            const oldMs = parseCnTimestampMs(STORE.state.serverSyncedAt);
+            const newMs = parseCnTimestampMs(val.serverSyncedAt);
+            if (Number.isFinite(oldMs) && Number.isFinite(newMs) && newMs < oldMs) {
+              STORE.stateErr = "";
+              lastStateOkMs = Date.now();
+              return true;
             }
           }
-        };
-
-        const liveP = fetchJsonSafe("/api/live" + qs).then(
-          (val) => {
-            STORE.live = val;
-            liveOk = true;
-            liveDone = true;
-            maybeRenderLiveState();
-          },
-          () => {
-            liveDone = true;
-            maybeRenderLiveState();
+          STORE.state = val;
+          STORE.stateSource = "network";
+          STORE.stateError = "";
+          STORE.stateErr = "";
+          lastStateOkMs = Date.now();
+          saveBootCache();
+          applyStateToDom(false);
+          return true;
+        } catch (err) {
+          STORE.stateErr = err && err.timedOut
+            ? "研究响应超时"
+            : `研究同步失败${err && err.status ? `(${err.status})` : ""}`;
+          if (!STORE.state) {
+            STORE.stateError = `主线研判状态暂不可用 (${err && err.timedOut ? "请求超时，请点击立即刷新重试" : (err && err.status ? err.status : "初始化中")})`;
+            renderHero();
           }
-        );
-
-        const stateP = fetchJsonSafe("/api/state" + qs).then(
-          (val) => {
-            STORE.state = val;
-            STORE.stateError = "";
-            stateOk = true;
-            stateDone = true;
-            maybeRenderLiveState();
-          },
-          (err) => {
-            STORE.stateError = `主线研判状态暂不可用 (${err && err.status ? err.status : "初始化中"})`;
-            stateDone = true;
-            maybeRenderLiveState();
+          return false;
+        } finally {
+          if (!inFlight.state) {
+            STORE.stateBusy = false;
           }
-        );
+          updateSyncPill();
+        }
+      }
 
-        await Promise.allSettled([liveP, stateP]);
-        if (isInitialLoad) {
-          if (!stateOk || !liveOk) {
-            updateSyncPill(false, "部分数据同步失败 · 显示已有结果");
+      async function fetchLive({ force = false } = {}) {
+        if (!force && inFlight.live) return false;
+        lastLiveAttemptMs = Date.now();
+        STORE.liveBusy = true;
+        if (force) STORE.liveErr = "";
+        updateSyncPill();
+        if (!STORE.live) {
+          renderQuoteRibbon();
+        } else {
+          updateQuoteRibbonTime();
+        }
+        try {
+          const res = await fetchEndpointJson("live", "/api/live", {
+            force,
+            timeoutMs: force ? LIVE_FORCE_TIMEOUT_MS : LIVE_TIMEOUT_MS,
+          });
+          if (res.skipped || res.superseded) return false;
+          const val = res.data;
+          if (!isValidLivePayload(val)) {
+            throw new Error("Invalid live payload");
+          }
+          if (!force && STORE.liveSource === "network" && STORE.live) {
+            const oldMs = parseCnTimestampMs(STORE.live.updatedAt);
+            const newMs = parseCnTimestampMs(val.updatedAt);
+            if (Number.isFinite(oldMs) && Number.isFinite(newMs) && newMs < oldMs) {
+              STORE.liveErr = "";
+              lastLiveOkMs = Date.now();
+              return true;
+            }
+          }
+          STORE.live = val;
+          STORE.liveSource = "network";
+          STORE.liveErr = "";
+          lastLiveOkMs = Date.now();
+          saveBootCache();
+          applyLiveToDom(false);
+          return true;
+        } catch (err) {
+          STORE.liveErr = err && err.timedOut
+            ? "行情响应超时"
+            : `行情同步失败${err && err.status ? `(${err.status})` : ""}`;
+          if (!STORE.renderedLiveHadTiles) {
+            renderQuoteRibbon();
           } else {
-            updateSyncPill(false, "");
+            updateQuoteRibbonTime();
+          }
+          return false;
+        } finally {
+          if (!inFlight.live) {
+            STORE.liveBusy = false;
+          }
+          updateQuoteRibbonTime();
+          updateSyncPill();
+        }
+      }
+
+      let manualRefreshToken = 0;
+      async function fetchAll(force = false) {
+        const btn = document.getElementById("btnRefreshAll");
+        let myToken = 0;
+        if (force) {
+          myToken = ++manualRefreshToken;
+          if (btn) {
+            btn.disabled = true;
+            btn.textContent = "刷新中...";
           }
         }
-        if (btn) btn.disabled = false;
-        refreshing = false;
+        try {
+          await Promise.allSettled([
+            fetchState({ force }),
+            fetchLive({ force }),
+          ]);
+        } finally {
+          if (force && myToken === manualRefreshToken && btn) {
+            btn.disabled = false;
+            btn.textContent = "立即刷新";
+          }
+        }
       }
 
       document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -2667,18 +3090,86 @@
       const refreshBtn = document.getElementById("btnRefreshAll");
       if (refreshBtn) refreshBtn.addEventListener("click", () => fetchAll(true));
 
+      let resizeTimer = 0;
       let redrawFrame = 0;
+      let lastResizeWidth = window.innerWidth;
       window.addEventListener("resize", () => {
-        cancelAnimationFrame(redrawFrame);
-        redrawFrame = requestAnimationFrame(() => {
-          if (STORE.activeTab === "chains") renderMainlines();
-          renderChartsForTab(STORE.activeTab);
-        });
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          const width = window.innerWidth;
+          if (width === lastResizeWidth) return;
+          lastResizeWidth = width;
+          markAllChartsDirty();
+          cancelAnimationFrame(redrawFrame);
+          redrawFrame = requestAnimationFrame(() => {
+            ensureTabCharts(STORE.activeTab, true);
+          });
+        }, 160);
       });
+
+      function currentLivePollInterval() {
+        const closed = STORE.live && (STORE.live.marketSession === "HOLIDAY" || STORE.live.marketSession === "OFF_HOURS");
+        return closed ? LIVE_POLL_CLOSED_MS : LIVE_POLL_MS;
+      }
+
+      let pollTimer = 0;
+      function pollTick() {
+        if (document.hidden) return;
+        const now = Date.now();
+        if (!inFlight.live && now - lastLiveAttemptMs >= currentLivePollInterval()) {
+          fetchLive({ force: false });
+        }
+        if (!inFlight.state && now - lastStateAttemptMs >= STATE_POLL_MS) {
+          fetchState({ force: false });
+        }
+      }
+
+      function startPolling() {
+        if (pollTimer || document.hidden) return;
+        pollTimer = setInterval(pollTick, 15000);
+      }
+
+      function stopPolling() {
+        if (!pollTimer) return;
+        clearInterval(pollTimer);
+        pollTimer = 0;
+      }
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          stopPolling();
+          return;
+        }
+        startPolling();
+        const now = Date.now();
+        const needLive = STORE.liveSource !== "network" || Boolean(STORE.liveErr) || (now - lastLiveOkMs >= currentLivePollInterval());
+        const needState = STORE.stateSource !== "network" || Boolean(STORE.stateErr) || (now - lastStateOkMs >= STATE_POLL_MS);
+        if (needLive && now - lastLiveAttemptMs >= VISIBILITY_COOLDOWN_MS) {
+          fetchLive({ force: false });
+        }
+        if (needState && now - lastStateAttemptMs >= VISIBILITY_COOLDOWN_MS) {
+          fetchState({ force: false });
+        }
+      });
+
+      window.addEventListener("online", () => {
+        if (document.hidden) return;
+        const now = Date.now();
+        if (now - lastLiveAttemptMs >= VISIBILITY_COOLDOWN_MS) fetchLive({ force: false });
+        if (now - lastStateAttemptMs >= VISIBILITY_COOLDOWN_MS) fetchState({ force: false });
+      });
+
+      const hadCache = loadBootCache();
+      if (hadCache) {
+        if (STORE.state) {
+          applyStateToDom(true);
+          if (STORE.live) STORE.renderedLiveKey = getLiveKey(STORE.live);
+        } else if (STORE.live) {
+          applyLiveToDom(true);
+        }
+      }
       fetchAll(false);
-      setInterval(() => {
-        fetchAll(false);
-      }, 180000);
+      startPolling();
     })();
   </script>
 </body>

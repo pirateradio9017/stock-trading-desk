@@ -3,6 +3,27 @@ import INDEX_HTML from "./spa_html.js";
 const APP_VERSION = "2.0.0";
 const CACHE_TTL_MS = 180_000;
 
+const WORKER_CONFIG = {
+  YAHOO_TIMEOUT_MS: 3500,
+  WSCN_TIMEOUT_MS: 4000,
+  YAHOO_CONCURRENCY: 8,
+  LIVE_REFRESH_BUDGET_MS: 6500,
+  LIVE_FRESH_ACTIVE_MS: 60_000,
+  LIVE_FRESH_IDLE_MS: CACHE_TTL_MS,
+  LIVE_SWR_MAX_AGE_MS: 15 * 60_000,
+  LIVE_STALE_WAIT_MS: 2500,
+  LIVE_FORCE_WAIT_MS: 4500,
+  LIVE_EDGE_MAX_SEC: 180,
+  NEWS_FRESH_MS: 60_000,
+  NEWS_SWR_MAX_AGE_MS: 15 * 60_000,
+  NEWS_STALE_WAIT_MS: 2500,
+  NEWS_FORCE_WAIT_MS: 4500,
+  NEWS_EDGE_MAX_SEC: 180,
+  STATE_FRESH_MS: 30_000,
+  STATE_EDGE_MAX_SEC: 300,
+  FALLBACK_COOLDOWN_SEC: 15,
+};
+
 const LIVE_SYMBOLS = [
   ["^GSPC", "标普500"],
   ["^IXIC", "纳斯达克"],
@@ -45,10 +66,35 @@ const LIVE_SYMBOLS = [
   ["LMT", "洛克希德·马丁"],
 ];
 
+// Ribbon, hero KPI, and primary anchor tickers run in the first fetch waves.
+const PRIORITY_LIVE_SYMBOLS = new Set([
+  "SPY",
+  "QQQ",
+  "^VIX",
+  "^TNX",
+  "BTC-USD",
+  "^GSPC",
+  "^IXIC",
+  "NVDA",
+  "AVGO",
+  "TSM",
+  "LMT",
+  "XLE",
+  "ITB",
+  "ASML",
+  "TLT",
+  "GC=F",
+  "CL=F",
+  "XLU",
+  "HYG",
+  "LQD",
+]);
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, If-None-Match",
+  "Access-Control-Expose-Headers": "ETag, X-Desk-Cache",
 };
 
 const SECURITY_HEADERS = {
@@ -56,16 +102,232 @@ const SECURITY_HEADERS = {
   "Referrer-Policy": "strict-origin-when-cross-origin",
 };
 
-function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      ...SECURITY_HEADERS,
-      ...CORS_HEADERS,
-    },
+const CACHE_CONTROL_HTML = "public, max-age=0, must-revalidate";
+const CACHE_CONTROL_STATE = "public, max-age=30, s-maxage=60, stale-while-revalidate=300";
+const CACHE_CONTROL_LIVE = "public, max-age=15, s-maxage=30, stale-while-revalidate=180";
+const CACHE_CONTROL_NEWS = "public, max-age=30, s-maxage=60, stale-while-revalidate=180";
+
+const ISOLATE_CACHE = new Map();
+const IN_FLIGHT = new Map();
+let cachedHtmlEtag = null;
+
+const ET_PARTS_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const ET_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+});
+
+function resetWorkerCaches() {
+  ISOLATE_CACHE.clear();
+  IN_FLIGHT.clear();
+  cachedHtmlEtag = null;
+}
+
+function fnv1aHex(str) {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 ^= c;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= (c + i) & 0xffff;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${str.length.toString(16)}-${(h1 >>> 0).toString(16).padStart(8, "0")}${(h2 >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function makeWeakEtag(prefix, body) {
+  return `W/"${prefix}-${fnv1aHex(body)}"`;
+}
+
+function getHtmlEtag() {
+  if (!cachedHtmlEtag) {
+    cachedHtmlEtag = makeWeakEtag("html", String(INDEX_HTML || ""));
+  }
+  return cachedHtmlEtag;
+}
+
+function normalizeEtagValue(tag) {
+  const trimmed = String(tag || "").trim();
+  return trimmed.startsWith("W/") || trimmed.startsWith("w/")
+    ? trimmed.slice(2).trim()
+    : trimmed;
+}
+
+function etagMatches(ifNoneMatchHeader, etag) {
+  if (!ifNoneMatchHeader || !etag) return false;
+  const raw = String(ifNoneMatchHeader).trim();
+  if (raw === "*") return true;
+  const target = normalizeEtagValue(etag);
+  return raw.split(",").some((part) => normalizeEtagValue(part) === target);
+}
+
+function getDefaultCache() {
+  try {
+    return typeof caches !== "undefined" && caches && caches.default ? caches.default : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function buildCacheKey(requestUrl, canonicalPath) {
+  const base = requestUrl ? new URL(requestUrl) : new URL("https://desk.local");
+  base.pathname = canonicalPath;
+  base.search = "";
+  base.hash = "";
+  return new Request(base.toString(), { method: "GET" });
+}
+
+function scheduleBackground(ctx, promise) {
+  const safe = Promise.resolve(promise).catch(() => {});
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(safe);
+  }
+  return safe;
+}
+
+function singleFlight(key, taskFn) {
+  const existing = IN_FLIGHT.get(key);
+  if (existing) return existing;
+  const promise = Promise.resolve()
+    .then(taskFn)
+    .finally(() => {
+      if (IN_FLIGHT.get(key) === promise) {
+        IN_FLIGHT.delete(key);
+      }
+    });
+  IN_FLIGHT.set(key, promise);
+  return promise;
+}
+
+async function raceWithDeadline(promise, timeoutMs, fallbackValue) {
+  let timer = null;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true, value: fallbackValue }), timeoutMs);
   });
+  try {
+    return await Promise.race([
+      promise.then(
+        (value) => ({ timedOut: false, value }),
+        () => ({ timedOut: true, value: fallbackValue })
+      ),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function getCachedPayload(cacheKey, keyName) {
+  const nowMs = Date.now();
+  const mem = ISOLATE_CACHE.get(keyName);
+  if (mem) {
+    if (nowMs <= mem.expiresAt) {
+      return { ...mem, layer: "MEM" };
+    }
+    ISOLATE_CACHE.delete(keyName);
+  }
+
+  const cache = getDefaultCache();
+  if (!cache || !cacheKey) return null;
+  try {
+    const hit = await cache.match(cacheKey);
+    if (!hit) return null;
+    const body = await hit.text();
+    const data = JSON.parse(body);
+    const cachedAt = Number(hit.headers.get("X-Desk-Cached-At")) || nowMs;
+    const ttlSec = Number(hit.headers.get("X-Desk-Edge-Ttl")) || 60;
+    const isFallback = hit.headers.get("X-Desk-Fallback") === "1";
+    const etag = hit.headers.get("ETag") || makeWeakEtag(keyName, body);
+    const expiresAt = cachedAt + ttlSec * 1000;
+    if (nowMs > expiresAt) return null;
+    const entry = { data, body, etag, cachedAt, expiresAt, isFallback };
+    ISOLATE_CACHE.set(keyName, entry);
+    return { ...entry, layer: "EDGE" };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function putCachedPayload(cacheKey, keyName, data, maxEdgeSec, ctx, isFallback = false) {
+  const cachedAt = Date.now();
+  const body = JSON.stringify(data);
+  const etag = makeWeakEtag(keyName, body);
+  const ttlSec = Math.max(1, Number(maxEdgeSec) || 60);
+  const entry = {
+    data,
+    body,
+    etag,
+    cachedAt,
+    expiresAt: cachedAt + ttlSec * 1000,
+    isFallback: Boolean(isFallback),
+  };
+  ISOLATE_CACHE.set(keyName, entry);
+
+  const cache = getDefaultCache();
+  if (cache && cacheKey) {
+    try {
+      const headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `public, max-age=${ttlSec}`,
+        "ETag": etag,
+        "X-Desk-Cached-At": String(cachedAt),
+        "X-Desk-Edge-Ttl": String(ttlSec),
+      };
+      if (isFallback) headers["X-Desk-Fallback"] = "1";
+      const resp = new Response(body, { status: 200, headers });
+      const putPromise = cache.put(cacheKey, resp);
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(Promise.resolve(putPromise).catch(() => {}));
+      } else {
+        await Promise.resolve(putPromise).catch(() => {});
+      }
+    } catch (_) {
+      // Cache API errors must never fail responses.
+    }
+  }
+  return entry;
+}
+
+function jsonResponse(data, statusOrOpts = 200) {
+  const opts = typeof statusOrOpts === "number" ? { status: statusOrOpts } : (statusOrOpts || {});
+  const status = opts.status ?? 200;
+  const cacheControl = opts.cacheControl || "no-store";
+  const request = opts.request || null;
+  const method = opts.method || (request ? request.method : "GET");
+  const body = opts.preSerializedBody !== undefined ? opts.preSerializedBody : JSON.stringify(data);
+  const etag = opts.etag || (status === 200 && cacheControl !== "no-store" ? makeWeakEtag(opts.etagPrefix || "json", body) : null);
+
+  const headers = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": cacheControl,
+    ...SECURITY_HEADERS,
+    ...CORS_HEADERS,
+  };
+  if (etag) headers["ETag"] = etag;
+  if (opts.cacheStatus) headers["X-Desk-Cache"] = opts.cacheStatus;
+
+  if (
+    status === 200 &&
+    etag &&
+    cacheControl !== "no-store" &&
+    request &&
+    etagMatches(request.headers.get("If-None-Match"), etag)
+  ) {
+    headers["X-Desk-Cache"] = opts.cacheStatus ? `${opts.cacheStatus}-304` : "304";
+    return new Response(null, { status: 304, headers });
+  }
+
+  return new Response(method === "HEAD" ? null : body, { status, headers });
 }
 
 function isForce(url) {
@@ -99,18 +361,8 @@ function formatCnNewsDate(date = new Date()) {
 }
 
 function getEtParts(date = new Date()) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
   const map = {};
-  for (const part of fmt.formatToParts(date)) {
+  for (const part of ET_PARTS_FMT.formatToParts(date)) {
     map[part.type] = part.value;
   }
   return {
@@ -204,6 +456,11 @@ function detectMarketSession(date = new Date()) {
   return { marketSession: "OFF_HOURS", updatedAtEt: etShort };
 }
 
+function isActiveMarketSession(date = new Date()) {
+  const s = detectMarketSession(date).marketSession;
+  return s === "PRE_MARKET" || s === "INTRADAY" || s === "AFTER_HOURS";
+}
+
 function finiteOrNull(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
@@ -215,33 +472,74 @@ function roundOrNull(v, digits = 2) {
   return Math.round(n * f) / f;
 }
 
-async function fetchYahooSymbol(sym, name, nowIso) {
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+  let controller = null;
+  let timer = null;
+  let signal = null;
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    signal = AbortSignal.timeout(timeoutMs);
+  } else if (typeof AbortController !== "undefined") {
+    controller = new AbortController();
+    signal = controller.signal;
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  }
+  try {
+    const fetchOpts = signal ? { ...options, signal } : { ...options };
+    const resp = await fetch(url, fetchOpts);
+    if (!resp || !resp.ok) return null;
+    return await resp.json();
+  } catch (_) {
+    return null;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, deadlineMs, workerFn) {
+  const results = new Array(items.length).fill(null);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  async function runWorker() {
+    while (cursor < items.length) {
+      if (deadlineMs && Date.now() >= deadlineMs) break;
+      const idx = cursor++;
+      try {
+        results[idx] = await workerFn(items[idx], idx);
+      } catch (_) {
+        results[idx] = null;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+  return results;
+}
+
+async function fetchYahooSymbol(sym, name, nowIso, isPreMarketOverride) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d&includePrePost=true`;
   try {
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" },
-    });
-    if (!resp.ok) return null;
-    const payload = await resp.json();
+    const payload = await fetchJsonWithTimeout(
+      url,
+      { headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" } },
+      WORKER_CONFIG.YAHOO_TIMEOUT_MS
+    );
     const res = payload?.chart?.result?.[0];
     if (!res) return null;
     const meta = res.meta || {};
     const timestamps = res.timestamp || [];
     const rawCloses = res.indicators?.quote?.[0]?.close || [];
     const seenDates = new Map();
-    const etFmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" });
     for (let i = 0; i < Math.min(timestamps.length, rawCloses.length); i++) {
       const c = finiteOrNull(rawCloses[i]);
       const ts = Number(timestamps[i]);
       if (c === null || c <= 0 || !Number.isFinite(ts)) continue;
-      seenDates.set(etFmt.format(new Date(ts * 1000)), c);
+      seenDates.set(ET_DATE_FMT.format(new Date(ts * 1000)), c);
     }
     const closes = Array.from(seenDates.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map((entry) => entry[1]);
 
     const price = finiteOrNull(meta.regularMarketPrice) ?? (closes.length ? closes[closes.length - 1] : null);
-    // Prefer regularMarketChangePercent or closes[-2]; never use range-wide chartPreviousClose.
+    // Prefer regularMarketChangePercent or closes[-2]; never rely on range-wide previous close.
     let chg = finiteOrNull(meta.regularMarketChangePercent);
     if (chg === null && price !== null) {
       const prevClose = closes.length >= 2
@@ -251,7 +549,9 @@ async function fetchYahooSymbol(sym, name, nowIso) {
         chg = ((price / prevClose) - 1) * 100;
       }
     }
-    const pre = detectMarketSession(new Date(nowIso)).marketSession === "PRE_MARKET";
+    const pre = typeof isPreMarketOverride === "boolean"
+      ? isPreMarketOverride
+      : detectMarketSession(new Date(nowIso)).marketSession === "PRE_MARKET";
     const usePre = (pre && finiteOrNull(meta.preMarketPrice) !== null) || finiteOrNull(meta.postMarketPrice) === null;
     let ahPrice = finiteOrNull(usePre ? meta.preMarketPrice : meta.postMarketPrice);
     let ahChg = finiteOrNull(usePre ? meta.preMarketChangePercent : meta.postMarketChangePercent);
@@ -294,30 +594,80 @@ async function fetchYahooSymbol(sym, name, nowIso) {
 
 async function safeKvJson(env, key) {
   try {
+    if (!env || !env.DESK_STATE || typeof env.DESK_STATE.get !== "function") return null;
     return await env.DESK_STATE.get(key, "json");
   } catch (_) {
     return null;
   }
 }
 
-function isFreshTimestamp(tsStr, maxAgeMs) {
-  if (!tsStr || typeof tsStr !== "string") return false;
-  const m = tsStr.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
-  if (!m) return false;
-  const utcMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 8, Number(m[5]), Number(m[6]));
-  const age = Date.now() - utcMs;
-  return age >= 0 && age <= maxAgeMs;
+function safeKvPut(env, key, value, ctx) {
+  if (!env || !env.DESK_STATE || typeof env.DESK_STATE.put !== "function") return;
+  try {
+    const putPromise = env.DESK_STATE.put(key, typeof value === "string" ? value : JSON.stringify(value));
+    scheduleBackground(ctx, putPromise);
+  } catch (_) {
+    // Ignore KV write scheduling errors.
+  }
 }
 
-async function getLivePayload(env, ctx, force) {
-  const cached = await safeKvJson(env, "live");
-  if (!force && cached && Array.isArray(cached.quotes) && cached.quotes.length >= 27 && isFreshTimestamp(cached.updatedAt, CACHE_TTL_MS)) {
-    return cached;
+function parseCnTimestampAgeMs(tsStr, nowMs = Date.now()) {
+  if (!tsStr || typeof tsStr !== "string") return null;
+  const m = tsStr.match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const utcMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 8, Number(m[5]), Number(m[6]));
+  const age = nowMs - utcMs;
+  return Number.isFinite(age) ? age : null;
+}
+
+function isFreshTimestamp(tsStr, maxAgeMs) {
+  const age = parseCnTimestampAgeMs(tsStr);
+  return age !== null && age >= 0 && age <= maxAgeMs;
+}
+
+function isValidLivePayload(payload) {
+  return Boolean(payload && Array.isArray(payload.quotes) && payload.quotes.length >= 27);
+}
+
+function getLiveFreshWindowMs(now = new Date()) {
+  return isActiveMarketSession(now)
+    ? WORKER_CONFIG.LIVE_FRESH_ACTIVE_MS
+    : WORKER_CONFIG.LIVE_FRESH_IDLE_MS;
+}
+
+function buildPriorityFetchOrder() {
+  const priority = [];
+  const rest = [];
+  for (let i = 0; i < LIVE_SYMBOLS.length; i++) {
+    if (PRIORITY_LIVE_SYMBOLS.has(LIVE_SYMBOLS[i][0])) {
+      priority.push(i);
+    } else {
+      rest.push(i);
+    }
+  }
+  return [...priority, ...rest];
+}
+
+const LIVE_FETCH_ORDER = buildPriorityFetchOrder();
+
+async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = false) {
+  let cached = cachedSeed || null;
+  if (checkKvFirst) {
+    const kvLatest = await safeKvJson(env, "live");
+    if (isValidLivePayload(kvLatest)) {
+      cached = kvLatest;
+      const freshMs = getLiveFreshWindowMs();
+      if (isFreshTimestamp(kvLatest.updatedAt, freshMs)) {
+        await putCachedPayload(cacheKey, "live", kvLatest, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
+        return kvLatest;
+      }
+    }
   }
 
   const now = new Date();
   const nowIso = formatUtcIso(now);
   const { marketSession, updatedAtEt } = detectMarketSession(now);
+  const isPreMarket = marketSession === "PRE_MARKET";
   const cachedBySym = Object.create(null);
   if (cached && Array.isArray(cached.quotes)) {
     for (const q of cached.quotes) {
@@ -325,9 +675,31 @@ async function getLivePayload(env, ctx, force) {
     }
   }
 
-  const fetched = await Promise.all(
-    LIVE_SYMBOLS.map(([sym, name]) => fetchYahooSymbol(sym, name, nowIso))
+  const deadlineMs = Date.now() + WORKER_CONFIG.LIVE_REFRESH_BUDGET_MS;
+  const fetchedInOrder = await mapWithConcurrency(
+    LIVE_FETCH_ORDER,
+    WORKER_CONFIG.YAHOO_CONCURRENCY,
+    deadlineMs,
+    (symIdx) => {
+      const [sym, name] = LIVE_SYMBOLS[symIdx];
+      return fetchYahooSymbol(sym, name, nowIso, isPreMarket);
+    }
   );
+  const fetched = new Array(LIVE_SYMBOLS.length).fill(null);
+  let freshCount = 0;
+  for (let i = 0; i < LIVE_FETCH_ORDER.length; i++) {
+    const symIdx = LIVE_FETCH_ORDER[i];
+    const item = fetchedInOrder[i];
+    fetched[symIdx] = item;
+    if (item && item.price !== null) freshCount++;
+  }
+
+  // Never stamp a fake fresh updatedAt if upstream returned zero live quotes.
+  if (freshCount === 0 && cached && Array.isArray(cached.quotes) && cached.quotes.length > 0) {
+    await putCachedPayload(cacheKey, "live", cached, WORKER_CONFIG.FALLBACK_COOLDOWN_SEC, ctx, true);
+    return cached;
+  }
+
   const liveSymSet = new Set(LIVE_SYMBOLS.map(([sym]) => sym));
   const quotes = LIVE_SYMBOLS.map(([sym, name], idx) => {
     const fresh = fetched[idx];
@@ -367,10 +739,94 @@ async function getLivePayload(env, ctx, force) {
     count: quotes.length,
     quotes,
   };
-  if (ctx && typeof ctx.waitUntil === "function") {
-    ctx.waitUntil(env.DESK_STATE.put("live", JSON.stringify(payload)));
+
+  if (freshCount > 0) {
+    await putCachedPayload(cacheKey, "live", payload, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
+    safeKvPut(env, "live", payload, ctx);
   }
   return payload;
+}
+
+async function resolveLive(env, ctx, force, requestUrl) {
+  const cacheKey = buildCacheKey(requestUrl, "/api/live");
+  const freshMs = getLiveFreshWindowMs();
+
+  if (!force) {
+    const hit = await getCachedPayload(cacheKey, "live");
+    if (hit && isValidLivePayload(hit.data)) {
+      const age = parseCnTimestampAgeMs(hit.data.updatedAt);
+      const withinFresh = age !== null && age >= 0 && age <= freshMs;
+      const withinSwr = age !== null && age >= -5000 && age <= WORKER_CONFIG.LIVE_SWR_MAX_AGE_MS;
+      const inCooldown = Boolean(hit.isFallback) && (Date.now() - hit.cachedAt < WORKER_CONFIG.FALLBACK_COOLDOWN_SEC * 1000);
+      if (withinFresh) {
+        return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-HIT` };
+      }
+      if (withinSwr || inCooldown) {
+        if (!inCooldown) {
+          scheduleBackground(
+            ctx,
+            singleFlight("live-refresh", () => fetchAndStoreLive(env, ctx, cacheKey, hit.data, true))
+          );
+        }
+        return {
+          payload: hit.data,
+          body: hit.body,
+          etag: hit.etag,
+          cacheStatus: inCooldown ? `${hit.layer}-FALLBACK` : `${hit.layer}-STALE`,
+        };
+      }
+    }
+  }
+
+  const cached = await safeKvJson(env, "live");
+  const hasValidKv = isValidLivePayload(cached);
+
+  if (!force && hasValidKv) {
+    const age = parseCnTimestampAgeMs(cached.updatedAt);
+    if (age !== null && age >= 0 && age <= freshMs) {
+      const entry = await putCachedPayload(cacheKey, "live", cached, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
+      return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-HIT" };
+    }
+    if (age !== null && age >= -5000 && age <= WORKER_CONFIG.LIVE_SWR_MAX_AGE_MS) {
+      const entry = await putCachedPayload(cacheKey, "live", cached, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
+      scheduleBackground(
+        ctx,
+        singleFlight("live-refresh", () => fetchAndStoreLive(env, ctx, cacheKey, cached, false))
+      );
+      return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-STALE" };
+    }
+  }
+
+  const refreshPromise = singleFlight("live-refresh", () =>
+    fetchAndStoreLive(env, ctx, cacheKey, cached, false)
+  );
+
+  const reuseMem = (payload) => {
+    const mem = ISOLATE_CACHE.get("live");
+    return mem && mem.data === payload ? { body: mem.body, etag: mem.etag } : {};
+  };
+
+  if (hasValidKv) {
+    const waitMs = force ? WORKER_CONFIG.LIVE_FORCE_WAIT_MS : WORKER_CONFIG.LIVE_STALE_WAIT_MS;
+    const outcome = await raceWithDeadline(refreshPromise, waitMs, cached);
+    if (outcome.timedOut) {
+      scheduleBackground(ctx, refreshPromise);
+      return { payload: cached, ...reuseMem(cached), cacheStatus: "KV-FALLBACK" };
+    }
+    return {
+      payload: outcome.value,
+      ...reuseMem(outcome.value),
+      cacheStatus: outcome.value === cached ? "KV-FALLBACK" : (force ? "FORCE-FRESH" : "ORIGIN-FRESH"),
+    };
+  }
+
+  const payload = await refreshPromise;
+  return { payload, ...reuseMem(payload), cacheStatus: force ? "FORCE-COLD" : "ORIGIN-COLD" };
+}
+
+async function getLivePayload(env, ctx, force) {
+  const res = await resolveLive(env, ctx, force, null);
+  return res.payload;
 }
 
 function countChineseChars(s) {
@@ -406,22 +862,29 @@ function isRelevantToUsDesk(tag, title, text) {
 
 async function fetchWscnChannel(channel, limit = 30) {
   const url = `https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=${channel}&limit=${limit}`;
-  try {
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" },
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    return data?.data?.items || [];
-  } catch (_) {
-    return [];
-  }
+  const data = await fetchJsonWithTimeout(
+    url,
+    { headers: { "User-Agent": "Mozilla/5.0 StockTradingDesk/2.0" } },
+    WORKER_CONFIG.WSCN_TIMEOUT_MS
+  );
+  return data?.data?.items || [];
 }
 
-async function getNewsPayload(env, ctx, force) {
-  const cached = await safeKvJson(env, "news");
-  if (!force && cached && Array.isArray(cached.items) && cached.items.length > 0 && isFreshTimestamp(cached.updatedAt, CACHE_TTL_MS)) {
-    return cached;
+function isValidNewsPayload(payload) {
+  return Boolean(payload && Array.isArray(payload.items) && payload.items.length > 0);
+}
+
+async function fetchAndStoreNews(env, ctx, cacheKey, cachedSeed, checkKvFirst = false) {
+  let cached = cachedSeed || null;
+  if (checkKvFirst) {
+    const kvLatest = await safeKvJson(env, "news");
+    if (isValidNewsPayload(kvLatest)) {
+      cached = kvLatest;
+      if (isFreshTimestamp(kvLatest.updatedAt, WORKER_CONFIG.NEWS_FRESH_MS)) {
+        await putCachedPayload(cacheKey, "news", kvLatest, WORKER_CONFIG.NEWS_EDGE_MAX_SEC, ctx);
+        return kvLatest;
+      }
+    }
   }
 
   const [usItems, globalItems] = await Promise.all([
@@ -491,7 +954,8 @@ async function getNewsPayload(env, ctx, force) {
   picked.sort((a, b) => b.sortTs - a.sortTs);
   const items = picked.map((entry) => entry.item);
 
-  if (items.length === 0 && cached && Array.isArray(cached.items) && cached.items.length > 0) {
+  if (items.length === 0 && isValidNewsPayload(cached)) {
+    await putCachedPayload(cacheKey, "news", cached, WORKER_CONFIG.FALLBACK_COOLDOWN_SEC, ctx, true);
     return cached;
   }
 
@@ -500,10 +964,130 @@ async function getNewsPayload(env, ctx, force) {
     count: items.length,
     items,
   };
-  if (items.length > 0 && ctx && typeof ctx.waitUntil === "function") {
-    ctx.waitUntil(env.DESK_STATE.put("news", JSON.stringify(payload)));
+  if (items.length > 0) {
+    await putCachedPayload(cacheKey, "news", payload, WORKER_CONFIG.NEWS_EDGE_MAX_SEC, ctx);
+    safeKvPut(env, "news", payload, ctx);
   }
   return payload;
+}
+
+async function resolveNews(env, ctx, force, requestUrl) {
+  const cacheKey = buildCacheKey(requestUrl, "/api/news");
+
+  if (!force) {
+    const hit = await getCachedPayload(cacheKey, "news");
+    if (hit && isValidNewsPayload(hit.data)) {
+      const age = parseCnTimestampAgeMs(hit.data.updatedAt);
+      const withinFresh = age !== null && age >= 0 && age <= WORKER_CONFIG.NEWS_FRESH_MS;
+      const withinSwr = age !== null && age >= -5000 && age <= WORKER_CONFIG.NEWS_SWR_MAX_AGE_MS;
+      const inCooldown = Boolean(hit.isFallback) && (Date.now() - hit.cachedAt < WORKER_CONFIG.FALLBACK_COOLDOWN_SEC * 1000);
+      if (withinFresh) {
+        return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-HIT` };
+      }
+      if (withinSwr || inCooldown) {
+        if (!inCooldown) {
+          scheduleBackground(
+            ctx,
+            singleFlight("news-refresh", () => fetchAndStoreNews(env, ctx, cacheKey, hit.data, true))
+          );
+        }
+        return {
+          payload: hit.data,
+          body: hit.body,
+          etag: hit.etag,
+          cacheStatus: inCooldown ? `${hit.layer}-FALLBACK` : `${hit.layer}-STALE`,
+        };
+      }
+    }
+  }
+
+  const cached = await safeKvJson(env, "news");
+  const hasValidKv = isValidNewsPayload(cached);
+
+  if (!force && hasValidKv) {
+    const age = parseCnTimestampAgeMs(cached.updatedAt);
+    if (age !== null && age >= 0 && age <= WORKER_CONFIG.NEWS_FRESH_MS) {
+      const entry = await putCachedPayload(cacheKey, "news", cached, WORKER_CONFIG.NEWS_EDGE_MAX_SEC, ctx);
+      return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-HIT" };
+    }
+    if (age !== null && age >= -5000 && age <= WORKER_CONFIG.NEWS_SWR_MAX_AGE_MS) {
+      const entry = await putCachedPayload(cacheKey, "news", cached, WORKER_CONFIG.NEWS_EDGE_MAX_SEC, ctx);
+      scheduleBackground(
+        ctx,
+        singleFlight("news-refresh", () => fetchAndStoreNews(env, ctx, cacheKey, cached, false))
+      );
+      return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-STALE" };
+    }
+  }
+
+  const refreshPromise = singleFlight("news-refresh", () =>
+    fetchAndStoreNews(env, ctx, cacheKey, cached, false)
+  );
+
+  const reuseMem = (payload) => {
+    const mem = ISOLATE_CACHE.get("news");
+    return mem && mem.data === payload ? { body: mem.body, etag: mem.etag } : {};
+  };
+
+  if (hasValidKv) {
+    const waitMs = force ? WORKER_CONFIG.NEWS_FORCE_WAIT_MS : WORKER_CONFIG.NEWS_STALE_WAIT_MS;
+    const outcome = await raceWithDeadline(refreshPromise, waitMs, cached);
+    if (outcome.timedOut) {
+      scheduleBackground(ctx, refreshPromise);
+      return { payload: cached, ...reuseMem(cached), cacheStatus: "KV-FALLBACK" };
+    }
+    return {
+      payload: outcome.value,
+      ...reuseMem(outcome.value),
+      cacheStatus: outcome.value === cached ? "KV-FALLBACK" : (force ? "FORCE-FRESH" : "ORIGIN-FRESH"),
+    };
+  }
+
+  const payload = await refreshPromise;
+  return { payload, ...reuseMem(payload), cacheStatus: force ? "FORCE-COLD" : "ORIGIN-COLD" };
+}
+
+async function getNewsPayload(env, ctx, force) {
+  const res = await resolveNews(env, ctx, force, null);
+  return res.payload;
+}
+
+async function fetchAndCacheState(env, ctx, cacheKey) {
+  const state = await safeKvJson(env, "state");
+  if (!state) return null;
+  return putCachedPayload(cacheKey, "state", state, WORKER_CONFIG.STATE_EDGE_MAX_SEC, ctx);
+}
+
+async function resolveState(env, ctx, force, requestUrl) {
+  const cacheKey = buildCacheKey(requestUrl, "/api/state");
+
+  if (!force) {
+    const hit = await getCachedPayload(cacheKey, "state");
+    if (hit && hit.data) {
+      const cacheAge = Date.now() - hit.cachedAt;
+      if (cacheAge <= WORKER_CONFIG.STATE_FRESH_MS) {
+        return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-HIT` };
+      }
+      scheduleBackground(
+        ctx,
+        singleFlight("state-refresh", () => fetchAndCacheState(env, ctx, cacheKey))
+      );
+      return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-STALE` };
+    }
+  }
+
+  const entry = force
+    ? await fetchAndCacheState(env, ctx, cacheKey)
+    : await singleFlight("state-refresh", () => fetchAndCacheState(env, ctx, cacheKey));
+  if (!entry) {
+    return { payload: null, cacheStatus: "MISS" };
+  }
+  return {
+    payload: entry.data,
+    body: entry.body,
+    etag: entry.etag,
+    cacheStatus: force ? "FORCE-KV" : "KV-HIT",
+  };
 }
 
 export default {
@@ -520,14 +1104,22 @@ export default {
         if (request.method !== "GET" && request.method !== "HEAD") {
           return jsonResponse({ ok: false, detail: "Method Not Allowed" }, 405);
         }
+        const htmlEtag = getHtmlEtag();
+        const headers = {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": CACHE_CONTROL_HTML,
+          "ETag": htmlEtag,
+          "X-Frame-Options": "SAMEORIGIN",
+          "X-Desk-Cache": "MEM-HIT",
+          ...SECURITY_HEADERS,
+        };
+        if (etagMatches(request.headers.get("If-None-Match"), htmlEtag)) {
+          headers["X-Desk-Cache"] = "MEM-304";
+          return new Response(null, { status: 304, headers });
+        }
         return new Response(request.method === "HEAD" ? null : INDEX_HTML, {
           status: 200,
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-store",
-            "X-Frame-Options": "SAMEORIGIN",
-            ...SECURITY_HEADERS,
-          },
+          headers,
         });
       }
 
@@ -543,11 +1135,20 @@ export default {
         const force = isForce(url);
 
         if (path === "/api/health") {
-          const [stateObj, live, news] = await Promise.all([
-            safeKvJson(env, "state"),
-            getLivePayload(env, ctx, force),
-            getNewsPayload(env, ctx, force),
+          const [stateRes, liveHit, newsHit] = await Promise.all([
+            resolveState(env, ctx, force, request.url),
+            force
+              ? resolveLive(env, ctx, true, request.url).then((r) => r.payload)
+              : getCachedPayload(buildCacheKey(request.url, "/api/live"), "live")
+                  .then((h) => (h && h.data ? h.data : safeKvJson(env, "live"))),
+            force
+              ? resolveNews(env, ctx, true, request.url).then((r) => r.payload)
+              : getCachedPayload(buildCacheKey(request.url, "/api/news"), "news")
+                  .then((h) => (h && h.data ? h.data : safeKvJson(env, "news"))),
           ]);
+          const stateObj = stateRes.payload;
+          const live = liveHit || (await getLivePayload(env, ctx, false));
+          const news = newsHit || (await getNewsPayload(env, ctx, false));
           let stateUpdatedAt = null;
           if (stateObj && stateObj.serverSyncedAt) {
             const m = String(stateObj.serverSyncedAt).match(/^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
@@ -556,52 +1157,97 @@ export default {
               stateUpdatedAt = formatUtcIso(dt);
             }
           }
-          return jsonResponse({
-            ok: true,
-            version: APP_VERSION,
-            serverTimeUtc: formatUtcIso(new Date()),
-            stateUpdatedAt,
-            newsCount: news.count,
-            quotesCount: live.count,
-          });
+          return jsonResponse(
+            {
+              ok: true,
+              version: APP_VERSION,
+              serverTimeUtc: formatUtcIso(new Date()),
+              stateUpdatedAt,
+              newsCount: news ? news.count : 0,
+              quotesCount: live ? live.count : 0,
+            },
+            { status: 200, cacheControl: "no-store", request }
+          );
         }
 
         if (path === "/api/live") {
-          let live = await getLivePayload(env, ctx, force);
+          const liveRes = await resolveLive(env, ctx, force, request.url);
+          let live = liveRes.payload;
           const sym = (url.searchParams.get("sym") || "").trim().toUpperCase();
           if (sym) {
-            const filtered = live.quotes.filter((q) => String(q.sym).toUpperCase() === sym);
+            const filtered = (live.quotes || []).filter((q) => String(q.sym).toUpperCase() === sym);
             live = { ...live, count: filtered.length, quotes: filtered };
+            return jsonResponse(live, {
+              status: 200,
+              cacheControl: force ? "no-store" : CACHE_CONTROL_LIVE,
+              etagPrefix: "live",
+              cacheStatus: liveRes.cacheStatus,
+              request,
+            });
           }
-          return jsonResponse(live);
+          return jsonResponse(live, {
+            status: 200,
+            cacheControl: force ? "no-store" : CACHE_CONTROL_LIVE,
+            etag: liveRes.etag,
+            etagPrefix: "live",
+            preSerializedBody: liveRes.body,
+            cacheStatus: liveRes.cacheStatus,
+            request,
+          });
         }
 
         if (path === "/api/state") {
-          const state = await safeKvJson(env, "state");
-          if (!state) {
-            return jsonResponse({ ok: false, error: "Research state not initialized in KV" }, 503);
+          const stateRes = await resolveState(env, ctx, force, request.url);
+          if (!stateRes.payload) {
+            return jsonResponse(
+              { ok: false, error: "Research state not initialized in KV" },
+              { status: 503, cacheControl: "no-store", request }
+            );
           }
-          return jsonResponse(state);
+          return jsonResponse(stateRes.payload, {
+            status: 200,
+            cacheControl: force ? "no-store" : CACHE_CONTROL_STATE,
+            etag: stateRes.etag,
+            preSerializedBody: stateRes.body,
+            cacheStatus: stateRes.cacheStatus,
+            request,
+          });
         }
 
         if (path === "/api/news") {
-          let news = await getNewsPayload(env, ctx, force);
+          const newsRes = await resolveNews(env, ctx, force, request.url);
+          let news = newsRes.payload;
           const limitRaw = url.searchParams.get("limit");
           if (limitRaw !== null) {
             const n = parseInt(limitRaw, 10);
             if (Number.isFinite(n)) {
               const clamped = Math.max(1, Math.min(n, 50));
-              const sliced = news.items.slice(0, clamped);
+              const sliced = (news.items || []).slice(0, clamped);
               news = { ...news, count: sliced.length, items: sliced };
+              return jsonResponse(news, {
+                status: 200,
+                cacheControl: force ? "no-store" : CACHE_CONTROL_NEWS,
+                etagPrefix: "news",
+                cacheStatus: newsRes.cacheStatus,
+                request,
+              });
             }
           }
-          return jsonResponse(news);
+          return jsonResponse(news, {
+            status: 200,
+            cacheControl: force ? "no-store" : CACHE_CONTROL_NEWS,
+            etag: newsRes.etag,
+            etagPrefix: "news",
+            preSerializedBody: newsRes.body,
+            cacheStatus: newsRes.cacheStatus,
+            request,
+          });
         }
 
-        return jsonResponse({ ok: false, detail: "Not Found" }, 404);
+        return jsonResponse({ ok: false, detail: "Not Found" }, { status: 404, request });
       }
 
-      return jsonResponse({ ok: false, detail: "Not Found" }, 404);
+      return jsonResponse({ ok: false, detail: "Not Found" }, { status: 404, request });
     } catch (err) {
       return jsonResponse({ ok: false, detail: "Internal server error" }, 500);
     }

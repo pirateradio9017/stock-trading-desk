@@ -337,3 +337,201 @@ def test_asml_included_in_setups_and_dim6_tolerates_two_missing_scissor_series()
     trimmed_state = s.model_copy(update={'analytics': s.analytics.model_copy(update={'linkageTrend': trimmed_lt})})
     _, rep = audit_and_repair_state(trimmed_state, b, engine_mode='deepseek', model_used='deepseek-flash')
     assert rep.passed
+
+
+def test_resolve_research_schedule_cadence_and_delay_catchup():
+    from src.config import (
+        SCHEDULE_ACTIVE_ODD_CRON,
+        SCHEDULE_BASELINE_CRON,
+        SCHEDULE_REBALANCE_CRON,
+        TZ_ET,
+        resolve_research_schedule,
+    )
+
+    # Manual dispatch always runs without catchup flag.
+    d_manual = resolve_research_schedule('workflow_dispatch', '', datetime(2026, 11, 26, 15, 0, tzinfo=timezone.utc))
+    assert d_manual.run is True and d_manual.catchup_rebalance is False
+
+    # Baseline 2h cron always runs even on holiday/weekend or delayed across an odd UTC hour.
+    for dt in (
+        datetime(2026, 11, 26, 15, 55, tzinfo=timezone.utc),  # Thanksgiving delayed into odd hour
+        datetime(2026, 11, 28, 3, 40, tzinfo=timezone.utc),   # Weekend delayed into odd hour
+    ):
+        dec = resolve_research_schedule('schedule', SCHEDULE_BASELINE_CRON, dt)
+        assert dec.run is True and dec.catchup_rebalance is False
+
+    # Active odd-hour cron runs during US PRE_MARKET/INTRADAY/AFTER_HOURS and skips OFF_HOURS/HOLIDAY.
+    assert resolve_research_schedule('schedule', SCHEDULE_ACTIVE_ODD_CRON, datetime(2026, 11, 25, 8, 13, tzinfo=TZ_ET)).run is True
+    assert resolve_research_schedule('schedule', SCHEDULE_ACTIVE_ODD_CRON, datetime(2026, 11, 25, 11, 13, tzinfo=TZ_ET)).run is True
+    assert resolve_research_schedule('schedule', SCHEDULE_ACTIVE_ODD_CRON, datetime(2026, 11, 25, 18, 13, tzinfo=TZ_ET)).run is True
+    assert resolve_research_schedule('schedule', SCHEDULE_ACTIVE_ODD_CRON, datetime(2026, 11, 25, 22, 13, tzinfo=TZ_ET)).run is False
+    assert resolve_research_schedule('schedule', SCHEDULE_ACTIVE_ODD_CRON, datetime(2026, 11, 26, 11, 13, tzinfo=TZ_ET)).run is False
+
+    # Rebalance cron on normal close day (2026-11-25, close 16:00 ET): tolerates 95-min GH cron delay.
+    assert resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 25, 13, 32, tzinfo=TZ_ET)).run is False
+    on_time = resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 25, 16, 32, tzinfo=TZ_ET))
+    assert on_time.run is True and on_time.catchup_rebalance is False
+    delayed_95m = resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 25, 18, 7, tzinfo=TZ_ET))
+    assert delayed_95m.run is True and delayed_95m.catchup_rebalance is True
+    assert resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 25, 18, 50, tzinfo=TZ_ET)).run is False
+
+    # Rebalance cron on early close day (2026-11-27, close 13:00 ET): 13:32 catches up to 15:44, 16:32 skips.
+    early_on_time = resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 27, 13, 32, tzinfo=TZ_ET))
+    assert early_on_time.run is True and early_on_time.catchup_rebalance is False
+    early_delayed = resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 27, 15, 7, tzinfo=TZ_ET))
+    assert early_delayed.run is True and early_delayed.catchup_rebalance is True
+    assert resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 27, 16, 32, tzinfo=TZ_ET)).run is False
+
+    # Holiday never runs rebalance cron.
+    assert resolve_research_schedule('schedule', SCHEDULE_REBALANCE_CRON, datetime(2026, 11, 26, 16, 32, tzinfo=TZ_ET)).run is False
+
+
+def test_kv_publish_retries_and_fallback_live_news_on_research_failure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import httpx
+    import src.pipeline as pipeline
+
+    b, s = sample()
+    attempts: dict[str, int] = {}
+
+    class FlakyKvClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def put(self, url, **kwargs):
+            key = url.rsplit('/', 1)[-1]
+            attempts[key] = attempts.get(key, 0) + 1
+            if key == 'news' and attempts[key] == 1:
+                return httpx.Response(503, text='transient', request=httpx.Request('PUT', url))
+            return httpx.Response(200, json={'success': True}, request=httpx.Request('PUT', url))
+
+    monkeypatch.setattr(pipeline.httpx, 'AsyncClient', lambda **kwargs: FlakyKvClient())
+    res = asyncio.run(pipeline.publish_to_cloudflare_kv(
+        state=s, live=b.live_response, news=b.news_response,
+        account_id='acct', api_token='tok', retry_delays=(0.01, 0.01),
+    ))
+    assert res == {'state': True, 'live': True, 'news': True}
+    assert attempts['news'] == 2
+
+    # Persistent rejection must raise loudly (zero silent write drops).
+    class RejectKvClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def put(self, url, **kwargs):
+            return httpx.Response(200, json={'success': False}, request=httpx.Request('PUT', url))
+
+    monkeypatch.setattr(pipeline.httpx, 'AsyncClient', lambda **kwargs: RejectKvClient())
+    with pytest.raises(RuntimeError, match='rejected'):
+        asyncio.run(pipeline.publish_to_cloudflare_kv(
+            state=s, live=b.live_response, news=b.news_response,
+            account_id='acct', api_token='tok', retry_delays=(0.01,),
+        ))
+
+    # When run_research_cycle fails during publish_kv=True, fresh live+news still push while state stays untouched.
+    pushed_keys: list[str] = []
+
+    class RestoreAndFallbackClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url, **kwargs):
+            return httpx.Response(200, json=s.model_dump(mode='json'), request=httpx.Request('GET', url))
+        async def put(self, url, **kwargs):
+            pushed_keys.append(url.rsplit('/', 1)[-1])
+            return httpx.Response(200, json={'success': True}, request=httpx.Request('PUT', url))
+
+    monkeypatch.setattr(pipeline, 'load_settings', lambda: SimpleNamespace(
+        data_dir=tmp_path, cf_account_id='acct', cf_api_token='tok'))
+    monkeypatch.setattr(pipeline.httpx, 'AsyncClient', lambda **kwargs: RestoreAndFallbackClient())
+    async def fake_ingest(**kwargs): return b
+    async def fail_research(*args, **kwargs): raise RuntimeError('Model unavailable; preserving previous accepted research')
+    monkeypatch.setattr(pipeline, 'run_ingestion', fake_ingest)
+    monkeypatch.setattr(pipeline, 'run_research_cycle', fail_research)
+
+    with pytest.raises(RuntimeError, match='Model unavailable'):
+        asyncio.run(pipeline.run_pipeline(data_dir=tmp_path, publish_kv=True, now_utc=b.fetched_at_utc))
+    assert set(pushed_keys) == {'live', 'news'}
+    assert 'state' not in pushed_keys
+    assert (tmp_path / 'live.json').is_file() and (tmp_path / 'news.json').is_file()
+
+
+def test_catchup_rebalance_idempotent_guard():
+    from src.models.schemas import HistoryEntry
+    from src.pipeline import _already_rebalanced_after_close
+
+    _, s = sample()
+    # Early-close day 2026-11-27 (close 13:00 ET): 13:35 ET = 18:35 UTC = 2026-11-28 02:35 UTC+8
+    now_delayed = datetime(2026, 11, 27, 20, 5, tzinfo=timezone.utc)  # 15:05 ET
+    locked_only = s.model_copy(update={'history': [
+        HistoryEntry(time='2026-11-28 01:15 UTC+8', type='防抖锁定', tone='slate', title='t', detail='d'),
+    ]})
+    assert _already_rebalanced_after_close(locked_only, now_delayed) is False
+
+    already_done = s.model_copy(update={'history': [
+        HistoryEntry(time='2026-11-28 02:35 UTC+8', type='主线复盘', tone='ochre', title='t', detail='d'),
+    ]})
+    assert _already_rebalanced_after_close(already_done, now_delayed) is True
+
+
+def test_screener_url_preserves_scrids_and_yfinance_fallback_is_bounded(monkeypatch):
+    import time as time_mod
+    import httpx
+    from src.config import FEED_SOURCES, SymbolSpec
+    import src.ingestion.market_data as md
+
+    merged = md._screener_request_url(FEED_SOURCES['yahoo_screener_gainers'].url, count=8)
+    assert merged.params.get('scrIds') == 'day_gainers'
+    assert merged.params.get('count') == '8'
+
+    class FailingClient:
+        async def get(self, url, **kwargs):
+            return httpx.Response(503, request=httpx.Request('GET', str(url)))
+
+    received_timeouts: list[float] = []
+
+    def slow_yf(spec, *, timeout_sec=6.0):
+        received_timeouts.append(timeout_sec)
+        time_mod.sleep(0.55)
+        raise AssertionError('should have timed out before completing')
+
+    monkeypatch.setattr(md, '_yfinance_fallback_sync', slow_yf)
+
+    async def _run():
+        t0 = time_mod.monotonic()
+        res = await md._fetch_single_symbol(
+            FailingClient(),
+            asyncio.Semaphore(2),
+            SymbolSpec('NVDA', '英伟达', 'equity_ai'),
+            market_session='INTRADAY',
+            now_utc=datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc),
+            yf_sem=asyncio.Semaphore(2),
+            req_timeout_sec=0.5,
+            yf_timeout_sec=0.1,
+        )
+        return res, time_mod.monotonic() - t0
+
+    series, elapsed = asyncio.run(_run())
+    assert series.quote is not None and series.quote.source == 'unavailable'
+    assert received_timeouts == [0.1]
+    assert elapsed < 0.75
+
+
+def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
+    from pathlib import Path
+    import yaml
+    from src.config import SCHEDULE_ACTIVE_ODD_CRON, SCHEDULE_BASELINE_CRON, SCHEDULE_REBALANCE_CRON
+
+    wf_path = Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'pipeline.yml'
+    wf = yaml.safe_load(wf_path.read_text(encoding='utf-8'))
+    on_cfg = wf.get('on') or wf.get(True)
+    crons = [entry['cron'] for entry in on_cfg['schedule']]
+    assert SCHEDULE_BASELINE_CRON in crons
+    assert SCHEDULE_ACTIVE_ODD_CRON in crons
+    assert SCHEDULE_REBALANCE_CRON in crons
+    rebal_entry = next(entry for entry in on_cfg['schedule'] if entry['cron'] == SCHEDULE_REBALANCE_CRON)
+    assert rebal_entry.get('timezone') == 'America/New_York'
+
+    steps = wf['jobs']['run-pipeline']['steps']
+    slot_step = next(st for st in steps if st.get('id') == 'research-slot')
+    assert 'resolve_research_schedule' in slot_step['run']
+    run_step = next(st for st in steps if 'Run research pipeline' in st.get('name', ''))
+    assert run_step['env']['DESK_LLM_PROVIDER'] == 'auto'
+    assert '--catchup-rebalance' in run_step['run']

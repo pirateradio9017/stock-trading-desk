@@ -41,6 +41,16 @@ from src.models.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _http_timeout(timeout_sec: float) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=min(4.0, timeout_sec),
+        read=min(8.0, timeout_sec),
+        write=min(5.0, timeout_sec),
+        pool=min(5.0, timeout_sec),
+    )
 
 _ROTATION_GROUPS: dict[str, str] = {
     "NVDA": "AI算力",
@@ -266,12 +276,12 @@ def _parse_yahoo_chart(
     )
 
 
-def _yfinance_fallback_sync(spec: SymbolSpec) -> SymbolSeries:
+def _yfinance_fallback_sync(spec: SymbolSpec, *, timeout_sec: float = 6.0) -> SymbolSeries:
     """Synchronous yfinance fallback when Yahoo v8 HTTP endpoint fails."""
     import yfinance as yf
 
     ticker = yf.Ticker(spec.sym)
-    hist = ticker.history(period="3mo", interval="1d", auto_adjust=False)
+    hist = ticker.history(period="3mo", interval="1d", auto_adjust=False, timeout=timeout_sec)
     if hist is None or hist.empty or "Close" not in hist:
         raise ValueError(f"Empty yfinance history for {spec.sym}")
 
@@ -345,20 +355,26 @@ def _parse_equity_valuation(html: str, source_url: str, market_date: date) -> Eq
 async def _fetch_equity_valuations(
     client: httpx.AsyncClient, market_date: date,
 ) -> dict[str, EquityValuation]:
-    sem = asyncio.Semaphore(5)
+    sem = asyncio.Semaphore(6)
+    val_timeout = httpx.Timeout(connect=3.0, read=5.0, write=4.0, pool=4.0)
 
     async def fetch(spec: SymbolSpec) -> tuple[str, EquityValuation | None]:
         url = f"https://finance.yahoo.com/quote/{url_quote(spec.sym, safe='')}/key-statistics/"
         try:
             async with sem:
-                result = await client.get(
-                    url, headers={"User-Agent": HTTP_USER_AGENT, "Accept": "text/html"}, timeout=6.0,
+                result = await asyncio.wait_for(
+                    client.get(
+                        url,
+                        headers={"User-Agent": HTTP_USER_AGENT, "Accept": "text/html"},
+                        timeout=val_timeout,
+                    ),
+                    timeout=7.0,
                 )
             result.raise_for_status()
             if result.url.host != "finance.yahoo.com" or result.url.path.rstrip("/") != httpx.URL(url).path.rstrip("/"):
                 return spec.sym, None
             return spec.sym, _parse_equity_valuation(result.text, url, market_date)
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             logger.debug("Forward P/E unavailable for %s: %s", spec.sym, exc)
             return spec.sym, None
 
@@ -374,8 +390,11 @@ async def _fetch_single_symbol(
     *,
     market_session: str,
     now_utc: datetime,
+    yf_sem: asyncio.Semaphore | None = None,
+    req_timeout_sec: float = 8.5,
+    yf_timeout_sec: float = 8.0,
 ) -> SymbolSeries:
-    """Fetch a single symbol via Yahoo v8 with retry and yfinance fallback."""
+    """Fetch a single symbol via Yahoo v8 with bounded retry and bounded yfinance fallback."""
     url_tpl = FEED_SOURCES["yahoo_v8"].url
     url = url_tpl.format(symbol=url_quote(spec.sym, safe=""))
     params = {"range": "3mo", "interval": "1d", "includePrePost": "true"}
@@ -384,10 +403,13 @@ async def _fetch_single_symbol(
     async with sem:
         for attempt in range(2):
             try:
-                resp = await client.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"},
+                resp = await asyncio.wait_for(
+                    client.get(
+                        url,
+                        params=params,
+                        headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"},
+                    ),
+                    timeout=req_timeout_sec,
                 )
                 if resp.status_code == 200:
                     return _parse_yahoo_chart(
@@ -397,15 +419,28 @@ async def _fetch_single_symbol(
                         now_utc=now_utc,
                     )
                 last_exc = RuntimeError(f"HTTP {resp.status_code} for {spec.sym}")
+                if resp.status_code not in _RETRYABLE_HTTP_STATUSES:
+                    break
             except Exception as exc:
                 last_exc = exc
             if attempt == 0:
                 await asyncio.sleep(0.35)
 
     try:
-        return await asyncio.to_thread(_yfinance_fallback_sync, spec)
+        yf_socket_timeout = min(6.0, yf_timeout_sec)
+        if yf_sem is not None:
+            async with yf_sem:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(_yfinance_fallback_sync, spec, timeout_sec=yf_socket_timeout),
+                    timeout=yf_timeout_sec,
+                )
+        return await asyncio.wait_for(
+            asyncio.to_thread(_yfinance_fallback_sync, spec, timeout_sec=yf_socket_timeout),
+            timeout=yf_timeout_sec,
+        )
     except Exception as yf_exc:
-        logger.warning("Failed fetching %s (%s; yf=%s)", spec.sym, last_exc, yf_exc)
+        yf_detail = str(yf_exc) or type(yf_exc).__name__
+        logger.warning("Failed fetching %s (%s; yf=%s)", spec.sym, last_exc, yf_detail)
         return SymbolSeries(
             spec=spec,
             dates=[],
@@ -421,6 +456,11 @@ async def _fetch_single_symbol(
         )
 
 
+def _screener_request_url(base_url: str, count: int = 8) -> httpx.URL:
+    """Append screener count without clobbering existing query params such as scrIds."""
+    return httpx.URL(base_url).copy_merge_params({"count": str(count)})
+
+
 async def _fetch_screeners(client: httpx.AsyncClient) -> list[ScreenerMover]:
     """Best-effort fetch of Yahoo day_gainers, day_losers, most_actives."""
     targets = (
@@ -428,13 +468,17 @@ async def _fetch_screeners(client: httpx.AsyncClient) -> list[ScreenerMover]:
         ("day_losers", FEED_SOURCES["yahoo_screener_losers"].url),
         ("most_actives", FEED_SOURCES["yahoo_screener_actives"].url),
     )
+    scr_timeout = httpx.Timeout(connect=3.0, read=5.0, write=4.0, pool=4.0)
 
     async def _one(category: str, url: str) -> list[ScreenerMover]:
         try:
-            resp = await client.get(
-                url,
-                params={"count": "8"},
-                headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"},
+            resp = await asyncio.wait_for(
+                client.get(
+                    _screener_request_url(url, count=8),
+                    headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/json"},
+                    timeout=scr_timeout,
+                ),
+                timeout=7.0,
             )
             if resp.status_code != 200:
                 return []
@@ -594,10 +638,18 @@ async def fetch_market_snapshot(
         ts_now = ts_now.replace(tzinfo=timezone.utc)
 
     market_session = get_market_session(ts_now)
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(12)
+    yf_sem = asyncio.Semaphore(4)
+    limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+    req_budget = min(timeout_sec, 8.5)
 
-    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=_http_timeout(timeout_sec),
+        limits=limits,
+        follow_redirects=True,
+    ) as client:
         valuations_task = asyncio.create_task(_fetch_equity_valuations(client, ts_now.astimezone(TZ_ET).date()))
+        screener_task = asyncio.create_task(_fetch_screeners(client)) if include_screener else None
         tasks = [
             _fetch_single_symbol(
                 client,
@@ -605,17 +657,26 @@ async def fetch_market_snapshot(
                 spec,
                 market_session=market_session,
                 now_utc=ts_now,
+                yf_sem=yf_sem,
+                req_timeout_sec=req_budget,
             )
             for spec in ALL_SYMBOLS
         ]
-        if include_screener:
-            screener_task = asyncio.create_task(_fetch_screeners(client))
-            results = await asyncio.gather(*tasks)
-            movers = await screener_task
-        else:
-            results = await asyncio.gather(*tasks)
-            movers = []
-        valuations = await valuations_task
+        results = await asyncio.gather(*tasks)
+
+        movers: list[ScreenerMover] = []
+        if screener_task is not None:
+            try:
+                movers = await asyncio.wait_for(screener_task, timeout=8.0)
+            except asyncio.TimeoutError:
+                logger.debug("Screener fetch timed out; continuing without movers")
+                movers = []
+
+        try:
+            valuations = await asyncio.wait_for(valuations_task, timeout=14.0)
+        except asyncio.TimeoutError:
+            logger.debug("Equity valuation fetch timed out; continuing without Forward P/E")
+            valuations = {}
 
     series_map: dict[str, SymbolSeries] = {res.spec.sym: res for res in results}
 

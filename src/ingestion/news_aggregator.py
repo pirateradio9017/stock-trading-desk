@@ -425,31 +425,57 @@ def select_research_wires(items: list[RawWireItem], now_utc: datetime) -> list[R
     return relevant + [x for x in clustered if x.event_id not in seen]
 
 
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _http_timeout(timeout_sec: float) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=min(3.5, timeout_sec),
+        read=min(6.5, timeout_sec),
+        write=min(4.0, timeout_sec),
+        pool=min(4.0, timeout_sec),
+    )
+
+
 async def _fetch_feed(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
     spec: FeedSpec,
     now_utc: datetime,
+    *,
+    req_timeout_sec: float = 8.0,
 ) -> tuple[str, list[RawWireItem]]:
+    max_attempts = 2 if spec.tier == "L1_WIRE_ZH" else 1
     async with sem:
-        try:
-            resp = await client.get(
-                spec.url,
-                headers={"User-Agent": HTTP_USER_AGENT},
-            )
-            if resp.status_code != 200:
-                logger.debug("Feed %s returned HTTP %d", spec.key, resp.status_code)
+        for attempt in range(max_attempts):
+            try:
+                resp = await asyncio.wait_for(
+                    client.get(
+                        spec.url,
+                        headers={"User-Agent": HTTP_USER_AGENT},
+                    ),
+                    timeout=req_timeout_sec,
+                )
+                if resp.status_code != 200:
+                    logger.debug("Feed %s returned HTTP %d", spec.key, resp.status_code)
+                    if resp.status_code in _RETRYABLE_HTTP_STATUSES and attempt < max_attempts - 1:
+                        await asyncio.sleep(0.3)
+                        continue
+                    return spec.key, []
+                if spec.kind == "json":
+                    return spec.key, _parse_wscn_payload(spec, resp.json(), now_utc)
+                if spec.kind in ("rss", "atom"):
+                    return spec.key, _parse_rss_payload(spec, resp.text, now_utc)
+                if spec.kind == "html":
+                    return spec.key, _parse_finviz_html(spec, resp.text)
                 return spec.key, []
-            if spec.kind == "json":
-                return spec.key, _parse_wscn_payload(spec, resp.json(), now_utc)
-            if spec.kind in ("rss", "atom"):
-                return spec.key, _parse_rss_payload(spec, resp.text, now_utc)
-            if spec.kind == "html":
-                return spec.key, _parse_finviz_html(spec, resp.text)
-            return spec.key, []
-        except Exception as exc:
-            logger.debug("Feed %s failed: %s", spec.key, exc)
-            return spec.key, []
+            except Exception as exc:
+                logger.debug("Feed %s attempt %d failed: %s", spec.key, attempt + 1, exc)
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.3)
+                    continue
+                return spec.key, []
+    return spec.key, []
 
 
 def build_chinese_news_response(
@@ -518,10 +544,16 @@ async def fetch_aggregated_news(
         for spec in FEED_SOURCES.values()
         if spec.tier in ("L1_WIRE_ZH", "L2_WIRE_ZH", "L2_WIRE_EN", "L2_AGGREGATOR")
     ]
-    sem = asyncio.Semaphore(6)
-    async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+    sem = asyncio.Semaphore(12)
+    limits = httpx.Limits(max_connections=24, max_keepalive_connections=12)
+    req_budget = min(timeout_sec, 8.0)
+    async with httpx.AsyncClient(
+        timeout=_http_timeout(timeout_sec),
+        limits=limits,
+        follow_redirects=True,
+    ) as client:
         results = await asyncio.gather(
-            *(_fetch_feed(client, sem, spec, ts_now) for spec in news_specs)
+            *(_fetch_feed(client, sem, spec, ts_now, req_timeout_sec=req_budget) for spec in news_specs)
         )
 
     feed_status: dict[str, int] = {}
