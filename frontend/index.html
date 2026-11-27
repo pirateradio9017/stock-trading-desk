@@ -495,8 +495,10 @@
     .setup-plot-wrap canvas { width: 100%; height: 240px; display: block; }
     .setup-chart-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .setup-card:focus, :focus-visible { outline: 2px solid #326b60; outline-offset: 2px; }
-    .candidate-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .candidate-charts { display: grid; align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .candidate-charts + .cand-grid { margin-top: 12px; }
+    .scatter-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+    .scatter-controls select { min-height: 40px; max-width: 100%; padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--paper-card); color: var(--ink); font: inherit; }
     .candidate-charts h3 { margin: 0 0 6px; font-size: .94rem; }
     .radar-note, .radar-toolbar { font-size: .85rem; color: var(--ink-muted); }
     .radar-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -1014,6 +1016,11 @@
           <div class="candidate-charts">
             <section class="ed-soft">
               <h3>20 日 × 5 日收益率</h3>
+              <div class="scatter-controls">
+                <label for="rotationSymbol">查看标的</label>
+                <select id="rotationSymbol"></select>
+              </div>
+              <p class="section-note">横轴看 20 日，纵轴看 5 日。零线区分涨跌。</p>
               <div class="chart-box chart-plot">
                 <canvas id="candQuadChart" role="img" aria-label="候补资产 20 日与 5 日收益散点图"></canvas>
               </div>
@@ -1273,7 +1280,18 @@
         return Array.from({length: count + 1}, (_, index) => min + index * (max - min) / count);
       }
 
-      function chartAxes(frame, xRange, yRange, xTitle = "", yTitle = "") {
+      function scatterScale(values, intervals) {
+        const low = Math.min(0, ...values), high = Math.max(0, ...values);
+        const raw = (high - low || 1) / intervals;
+        const power = 10 ** Math.floor(Math.log10(raw));
+        const step = [1, 2, 2.5, 5, 10].find(size => size * power >= raw) * power;
+        const start = Math.floor(low / step);
+        const end = Math.max(start + 1, Math.ceil(high / step));
+        const ticks = Array.from({length: end - start + 1}, (_, i) => (start + i) * step);
+        return {range: [ticks[0] - step * .15, ticks.at(-1) + step * .15], ticks};
+      }
+
+      function chartAxes(frame, xRange, yRange, xTitle = "", yTitle = "", ticks = {}) {
         const {ctx, width, height} = frame;
         const left = 47, right = width - 14, top = yTitle ? 27 : 12, bottom = height - (xTitle ? 42 : 24);
         const x = (value) => left + (value - xRange[0]) * (right - left) / (xRange[1] - xRange[0]);
@@ -1281,14 +1299,14 @@
         ctx.strokeStyle = "#d1ddda";
         ctx.fillStyle = "#485e5d";
         ctx.textAlign = "right";
-        for (const tick of chartTicks(yRange, 4)) {
+        for (const tick of ticks.y || chartTicks(yRange, 4)) {
           const pos = y(tick);
           chartSegment(ctx, left, pos, right, pos);
           ctx.fillText(String(Number(tick.toPrecision(3))), left - 6, pos + 4);
         }
         if (xTitle) {
           ctx.textAlign = "center";
-          for (const tick of chartTicks(xRange, width < 420 ? 3 : 5)) {
+          for (const tick of ticks.x || chartTicks(xRange, width < 420 ? 3 : 5)) {
             ctx.fillText(String(Number(tick.toPrecision(3))), x(tick), bottom + 15);
           }
           ctx.fillText(xTitle, (left + right) / 2, height - 5);
@@ -1401,7 +1419,7 @@
         };
       }
 
-      function drawScatter(id, points, xTitle, yTitle, onPick, reading, includeZero = true) {
+      function drawScatter(id, points, xTitle, yTitle, onPick, reading, includeZero = true, selection = null) {
         const frame = canvasFrame(id);
         if (!frame) return;
         const {ctx, canvas} = frame;
@@ -1409,9 +1427,13 @@
           chartEmpty(frame);
           return;
         }
-        const xRange = chartRange(points.map(p => p.x), includeZero);
-        const yRange = chartRange(points.map(p => p.y), includeZero);
-        const axes = chartAxes(frame, xRange, yRange, xTitle, yTitle);
+        const xValues = points.map(p => p.x);
+        const yValues = points.map(p => p.y);
+        const xScale = selection && scatterScale(xValues, frame.width < 400 ? 4 : 5);
+        const yScale = selection && scatterScale(yValues, 4);
+        const xRange = xScale?.range || chartRange(xValues, includeZero);
+        const yRange = yScale?.range || chartRange(yValues, includeZero);
+        const axes = chartAxes(frame, xRange, yRange, xTitle, yTitle, {x: xScale?.ticks, y: yScale?.ticks});
         if (xRange[0] < 0 && xRange[1] > 0) {
           ctx.strokeStyle = "#7c928e";
           chartSegment(ctx, axes.x(0), axes.top, axes.x(0), axes.bottom);
@@ -1420,7 +1442,15 @@
         for (const point of points) {
           const x = axes.x(point.x), y = axes.y(point.y);
           ctx.fillStyle = point.color;
-          chartDot(ctx, x, y, 5);
+          chartDot(ctx, x, y, selection ? 4 : 5);
+          if (selection && point.label !== selection.value) continue;
+          if (selection) {
+            ctx.strokeStyle = "#152c2c";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(x, y, 8, 0, Math.PI * 2);
+            ctx.stroke();
+          }
           const textWidth = ctx.measureText(point.label).width;
           const labelX = Math.max(axes.left, Math.min(axes.right - textWidth, x + 8));
           const candidates = [-6, 12, -19, 25, -32];
@@ -1436,18 +1466,18 @@
         const readPoint = point => {
           if (reading && point) reading.textContent = `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}`;
         };
-        if (reading) readPoint(points[0]);
+        if (reading) readPoint(points.find(point => point.label === selection?.value) || points[0]);
         const nearest = (event) => points
           .map(point => ({point, distance: Math.hypot(axes.x(point.x) - event.offsetX, axes.y(point.y) - event.offsetY)}))
           .reduce((best, hit) => hit.distance < best.distance ? hit : best, {distance: event.pointerType === "touch" ? 27 : 18});
         canvas.onpointermove = event => {
           const {point} = nearest(event);
           canvas.style.cursor = point && onPick ? "pointer" : "";
-          readPoint(point);
+          if (!selection) readPoint(point);
           const title = point ? `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}` : "";
           if (canvas.title !== title) canvas.title = title;
         };
-        canvas.onpointerdown = event => readPoint(nearest(event).point);
+        canvas.onpointerdown = selection ? null : event => readPoint(nearest(event).point);
         canvas.onclick = onPick ? event => {
           const {point} = nearest(event);
           if (point) onPick(point);
@@ -1986,7 +2016,17 @@
           plot.parentElement.after(reading);
         }
         reading.hidden = !scatter.length;
-        drawScatter(plot.id, scatter, "20 日收益 (%)", "5 日收益 (%)", null, reading);
+        const selector = document.getElementById("rotationSymbol");
+        const selected = selector.value;
+        selector.innerHTML = scatter.map(point => `<option>${escapeHtml(point.label)}</option>`).join("");
+        if (scatter.some(point => point.label === selected)) selector.value = selected;
+        selector.disabled = !scatter.length;
+        const redraw = () => drawScatter(plot.id, scatter, "20 日收益 (%)", "5 日收益 (%)", point => {
+          selector.value = point.label;
+          redraw();
+        }, reading, true, selector);
+        selector.onchange = redraw;
+        redraw();
 
         const ranked = numeric.filter(row => row.y !== null).sort((a, b) => b.y - a.y);
         const limit = Math.max(0.01, ...ranked.map(row => Math.abs(row.y)));
