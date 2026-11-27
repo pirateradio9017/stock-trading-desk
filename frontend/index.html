@@ -841,26 +841,6 @@
       flex-wrap: wrap;
     }
 
-    /* News Tab */
-    .news-list { border-top: 1px solid var(--border); }
-
-    .news-title {
-      display: block;
-      padding: 10px 8px;
-      border-bottom: 1px solid var(--border);
-      font-size: .95rem;
-      line-height: 1.5;
-      color: var(--ink);
-      overflow-wrap: anywhere;
-      text-decoration: none;
-    }
-
-    a.news-title:hover, a.news-title:focus-visible {
-      background: var(--paper-soft);
-      text-decoration: underline;
-      text-underline-offset: 3px;
-    }
-
     .empty-box {
       background: var(--paper-soft);
       border: 1px dashed var(--border-strong);
@@ -923,7 +903,6 @@
       <button type="button" class="tab-btn" data-tab="candidates" aria-pressed="false" aria-controls="panel-candidates">替补与轮动</button>
       <button type="button" class="tab-btn" data-tab="linkage" aria-pressed="false" aria-controls="panel-linkage">跨资产联动</button>
       <button type="button" class="tab-btn" data-tab="macro" aria-pressed="false" aria-controls="panel-macro">宏观与日程</button>
-      <button type="button" class="tab-btn" data-tab="news" aria-pressed="false" aria-controls="panel-news">中文快讯</button>
     </nav>
 
     <main>
@@ -939,7 +918,7 @@
           <div id="quoteRibbon" class="quote-ribbon" role="region" aria-label="核心标的行情" tabindex="0"></div>
         </div>
         <div class="ed-card">
-          <h2 class="section-title">主线动能与估值筛选</h2>
+          <h2 class="section-title">每日主线动能与传导</h2>
           <p class="section-note">选择主线可查看对应估值与回撤标的，分值采用本轮研究评分。</p>
           <div id="mainlineMomentum" class="ranking-list"></div>
           <details id="mainlineTrend" class="trend-details">
@@ -1002,7 +981,7 @@
 
       <section id="panel-linkage" class="tab-panel">
         <div class="ed-card">
-          <h2 class="section-title"><span>跨资产 6×6 日收益相关性矩阵</span></h2>
+          <h2 class="section-title"><span>跨资产相关性热力矩阵</span></h2>
           <p class="section-note" id="corrMethod">相关系数基于共同交易日的日收益率。</p>
           <div class="table-scroll" id="corrMatrixWrap"></div>
         </div>
@@ -1023,7 +1002,7 @@
 
       <section id="panel-macro" class="tab-panel">
         <div class="ed-card">
-          <h2 class="section-title"><span>五维宏观温度计</span><span id="radarRegime" class="badge tone-slate">正在读取</span></h2>
+          <h2 class="section-title"><span>宏观与产业五维雷达</span><span id="radarRegime" class="badge tone-slate">正在读取</span></h2>
           <p class="radar-note">外圈 100 = 代理指标较顺风，内圈 0 = 较逆风。评分为规则观察值，不是收益概率。</p>
           <div class="radar-toolbar"><span id="radarTime"></span><button type="button" id="radarReplay" class="tab-btn">重播动画</button></div>
           <div class="chart-box-tall">
@@ -1039,28 +1018,18 @@
         </div>
 
         <div class="ed-card">
-          <h2 class="section-title"><span>近期重要宏观与财报日程</span></h2>
+          <h2 class="section-title"><span>关键交易日程与宏观闸口</span></h2>
           <div id="calendarContainer" class="cal-list"></div>
         </div>
         <div class="ed-card">
           <div class="history-head">
-            <h2 class="section-title">主线演进与复盘</h2>
+            <h2 class="section-title">主线演进与复盘日志</h2>
             <button type="button" class="btn" id="toggleHistory" aria-controls="historyLog" aria-expanded="false" hidden>展开全部</button>
           </div>
           <div id="historyLog" class="timeline-list"></div>
         </div>
       </section>
 
-      <section id="panel-news" class="tab-panel">
-        <div class="ed-card">
-          <h2 class="section-title">
-            <span>中文财经快讯（去重聚簇）</span>
-            <button type="button" class="btn" id="btnNewsReload">刷新快讯</button>
-          </h2>
-          <div id="newsMetaBar" style="font-size:12px;color:var(--ink-muted);margin-bottom:10px;"></div>
-          <div id="newsContainer" class="news-list"></div>
-        </div>
-      </section>
     </main>
   </div>
 
@@ -1077,8 +1046,6 @@
         greenUp: false,
         live: null,
         state: null,
-        news: null,
-        newsError: "",
         stateError: "",
       };
 
@@ -2305,36 +2272,6 @@
       }
       document.getElementById('radarReplay').onclick = () => renderMacroRadar(true);
 
-      function renderNews() {
-        const metaBar = document.getElementById("newsMetaBar");
-        const listEl = document.getElementById("newsContainer");
-        if (!metaBar || !listEl) return;
-
-        if (STORE.newsError) {
-          metaBar.textContent = "快讯接口暂未就绪";
-          listEl.innerHTML = `<div class="empty-box">${escapeHtml(STORE.newsError)}</div>`;
-          return;
-        }
-        if (!STORE.news) {
-          metaBar.textContent = "正在拉取中文财经快讯...";
-          listEl.innerHTML = `<div class="empty-box">正在同步多源中文电报...</div>`;
-          return;
-        }
-        const items = Array.isArray(STORE.news.items) ? STORE.news.items.slice(0, 10) : [];
-        metaBar.textContent = `更新时间：${STORE.news.updatedAt || "--"} · 共 ${items.length} 条去重快讯`;
-        if (items.length === 0) {
-          listEl.innerHTML = `<div class="empty-box">当前暂未获取到有效中文快讯，请稍后点击刷新重试。</div>`;
-          return;
-        }
-        listEl.innerHTML = items.map((item) => {
-          const link = safeHttpUrl(item.link);
-          const title = escapeHtml(item.title);
-          return link
-            ? `<a class="news-title" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${title}</a>`
-            : `<span class="news-title">${title}</span>`;
-        }).join("");
-      }
-
       function renderChartsForTab(tabName) {
         if (tabName === "chains") {
           renderMomentum();
@@ -2347,17 +2284,6 @@
         } else if (tabName === "macro") {
           renderMacroRadar();
         }
-      }
-
-      function renderAll() {
-        renderQuoteRibbon();
-        renderHero();
-        renderMainlines();
-        renderCandidates();
-        renderLinkage();
-        renderMacro();
-        renderNews();
-        renderChartsForTab(STORE.activeTab);
       }
 
       function switchTab(tabName) {
@@ -2406,23 +2332,6 @@
         if (!data || typeof data !== "object") throw new Error("Invalid API payload");
         return data;
         } finally { clearTimeout(timer); }
-      }
-
-      async function fetchNewsOnly(force) {
-        const btn = document.getElementById("btnNewsReload");
-        if (btn) btn.disabled = true;
-        try {
-          const qs = force ? `?force=1&t=${Date.now()}` : `?t=${Date.now()}`;
-          const data = await fetchJsonSafe("/api/news" + qs);
-          STORE.news = data;
-          STORE.newsError = "";
-        } catch (err) {
-          if (err.superseded) return;
-          STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
-        } finally {
-          if (btn) btn.disabled = false;
-          renderNews();
-        }
       }
 
       let refreshing = false;
@@ -2488,20 +2397,7 @@
           }
         );
 
-        const newsP = fetchJsonSafe("/api/news" + qs).then(
-          (val) => {
-            STORE.news = val;
-            STORE.newsError = "";
-            renderNews();
-          },
-          (err) => {
-            if (err.superseded) return;
-            STORE.newsError = `快讯拉取失败 (${err && err.status ? err.status : "网络异常"})，请点击刷新重试`;
-            renderNews();
-          }
-        );
-
-        await Promise.allSettled([liveP, stateP, newsP]);
+        await Promise.allSettled([liveP, stateP]);
         if (isInitialLoad) {
           if (!stateOk || !liveOk) {
             updateSyncPill(false, "部分数据同步失败 · 显示已有结果");
@@ -2553,9 +2449,6 @@
 
       const refreshBtn = document.getElementById("btnRefreshAll");
       if (refreshBtn) refreshBtn.addEventListener("click", () => fetchAll(true));
-
-      const newsReloadBtn = document.getElementById("btnNewsReload");
-      if (newsReloadBtn) newsReloadBtn.addEventListener("click", () => fetchNewsOnly(true));
 
       let redrawFrame = 0;
       window.addEventListener("resize", () => {
