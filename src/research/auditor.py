@@ -107,12 +107,12 @@ def _collect_verified_urls(bundle: IngestionBundle) -> set[str]:
     for c in bundle.primary.calendar_events:
         if _is_valid_http_url(c.source_url):
             urls.add(c.source_url)
-    for n in bundle.news.response.items:
+    for valuation in bundle.market.valuations.values():
+        if valuation.forward_pe is not None and _is_valid_http_url(valuation.source_url):
+            urls.add(valuation.source_url)
+    for n in bundle.news.research_items:
         if _is_valid_http_url(n.link):
             urls.add(n.link)
-    for r in bundle.news.raw_items:
-        if _is_valid_http_url(r.link):
-            urls.add(r.link)
     return urls
 
 
@@ -121,7 +121,7 @@ def _fallback_url_for_anchor(anchor_sym: str, bundle: IngestionBundle) -> str:
     for f in bundle.primary.sec_filings:
         if f.sym.upper() == sym_u and _is_valid_http_url(f.url):
             return f.url
-    for n in bundle.news.response.items:
+    for n in bundle.news.research_items:
         if sym_u in n.title.upper() or sym_u in n.summary.upper():
             return n.link
     return f"https://finance.yahoo.com/quote/{anchor_sym}"

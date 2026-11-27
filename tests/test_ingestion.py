@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -18,10 +18,12 @@ from src.ingestion.market_data import (
 from src.ingestion.news_aggregator import (
     RawWireItem,
     _parse_finviz_html,
+    _parse_rss_payload,
     _parse_wscn_payload,
     build_chinese_news_response,
     deduplicate_wire_items,
     is_predominantly_chinese,
+    select_research_wires,
 )
 from src.ingestion.primary_sources import (
     SecFilingSignal,
@@ -249,7 +251,6 @@ def test_wscn_empty_title_splitting_dedup_and_chinese_filter() -> None:
 def test_parse_finviz_html_extracts_valid_links() -> None:
     from src.config import FEED_SOURCES
 
-    now_utc = datetime(2026, 11, 26, 10, 0, tzinfo=timezone.utc)
     html = """
     <html><body>
       <table class="styled-table-new">
@@ -258,9 +259,74 @@ def test_parse_finviz_html_extracts_valid_links() -> None:
       </table>
     </body></html>
     """
-    items = _parse_finviz_html(FEED_SOURCES["finviz_news"], html, now_utc)
+    items = _parse_finviz_html(FEED_SOURCES["finviz_news"], html)
     assert len(items) == 1
     assert items[0].link == "https://example.com/news/1"
+    assert items[0].pub_dt_utc is None
+    assert items[0].pub_date_cn == "发布时间未提供"
+
+
+def test_rss_last_updated_does_not_become_publication_time() -> None:
+    from src.config import FEED_SOURCES
+
+    now_utc = datetime(2026, 11, 26, 10, 0, tzinfo=timezone.utc)
+    xml = """<feed xmlns="http://www.w3.org/2005/Atom">
+        <entry>
+          <title>美债收益率回落推升久期资产</title><link href="https://example.com/first"/>
+          <published>2026-11-26T08:00:00+00:00</published><updated>2026-11-26T09:00:00Z</updated>
+        </entry>
+        <entry>
+          <title>美联储利率路径调查专题</title><link href="https://example.com/second"/>
+          <updated>2026-11-26T09:00:00Z</updated>
+        </entry>
+        <entry>
+          <title>原油期货市场收盘综述</title><link href="https://example.com/third"/>
+          <published>2026-11-26T08:01:00</published>
+        </entry>
+      </feed>"""
+    items = _parse_rss_payload(FEED_SOURCES["cnbc_markets"], xml, now_utc)
+    assert [item.pub_date_cn for item in items] == ["2026-11-26 16:00 UTC+8", "发布时间未提供", "发布时间未提供"]
+    assert [item.link for item in select_research_wires(items, now_utc)] == ["https://example.com/first"]
+
+
+def test_old_recap_and_undated_leads_stay_in_feed_only() -> None:
+    from src.config import FEED_SOURCES
+
+    now_utc = datetime(2026, 11, 26, 10, 0, tzinfo=timezone.utc)
+    recent = now_utc - timedelta(hours=1)
+    headlines = [
+        ("美联储今日公布会议纪要，补充上月通胀讨论", str(int(recent.timestamp()))),
+        ("【回顾】2026年10月15日英伟达披露供货计划", int(recent.timestamp())),
+        ("旧闻重刊：比特币资产配置争议", int(recent.timestamp())),
+        ("复盘：11月25日现货黄金盘中交易", int(recent.timestamp())),
+        ("台积电新一轮资本支出数据发布", None),
+        ("两地布伦特油价显著回落", int((now_utc - timedelta(hours=49)).timestamp())),
+        ("欧洲芯片板块交易汇总", int((now_utc + timedelta(hours=2)).timestamp())),
+    ]
+    entries = [
+        {"title": title, "uri": f"https://example.com/{i}", "display_time": stamp}
+        for i, (title, stamp) in enumerate(headlines)
+    ]
+    items = _parse_wscn_payload(FEED_SOURCES["wscn_us_stock"], {"data": {"items": entries}}, now_utc)
+    public = build_chinese_news_response(deduplicate_wire_items(items), now_utc)
+    assert {item.title for item in public.items} == {title for title, _ in headlines}
+    assert public.items[-1].pubDate == "发布时间未提供"
+    assert [item.title for item in select_research_wires(items, now_utc)] == [headlines[0][0], headlines[3][0]]
+
+
+def test_research_selection_clusters_after_excluding_expired_copies() -> None:
+    from src.config import FEED_SOURCES
+
+    now_utc = datetime(2026, 11, 26, 10, 0, tzinfo=timezone.utc)
+    title = "台积电更新供应链资本支出展望"
+    entries = [
+        {"title": title, "uri": "https://example.com/older", "display_time": int((now_utc - timedelta(days=4)).timestamp())},
+        {"title": title, "uri": "https://example.com/newer", "display_time": int((now_utc - timedelta(hours=2)).timestamp())},
+    ]
+    items = _parse_wscn_payload(FEED_SOURCES["wscn_us_stock"], {"data": {"items": entries}}, now_utc)
+    items[0].score = 120
+    assert [item.link for item in deduplicate_wire_items(items)] == ["https://example.com/older"]
+    assert [item.link for item in select_research_wires(items, now_utc)] == ["https://example.com/newer"]
 
 
 def test_us_desk_news_relevance_prioritizes_market_wires() -> None:

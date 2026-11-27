@@ -88,6 +88,8 @@ CORE_SYMBOLS: tuple[SymbolSpec, ...] = (
     SymbolSpec("CRWV", "CoreWeave", "equity_cloud_power"),
     SymbolSpec("COIN", "Coinbase", "equity_crypto"),
     SymbolSpec("MSTR", "Strategy", "equity_crypto"),
+    SymbolSpec("TSM", "台积电", "equity_ai"),
+    SymbolSpec("LMT", "洛克希德·马丁", "equity_defense"),
 )
 
 APAC_SYMBOLS: tuple[SymbolSpec, ...] = (

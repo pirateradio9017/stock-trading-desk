@@ -4,17 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>美股交易链条观察 · 全市场主线与联动研判</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <style>
     :root {
-      --paper: #F4F1EC;
-      --paper-card: #FAF8F4;
-      --paper-soft: #EFEAE2;
-      --ink: #1F1D1A;
-      --ink-muted: #655F56;
-      --ink-faint: #8C857B;
-      --border: #DDD6CB;
-      --border-strong: #C9C0B2;
+      --paper: #eff2f2;
+      --paper-card: #fbfcfc;
+      --paper-soft: #edf1ef;
+      --ink: #152c2c;
+      --ink-muted: #485e5d;
+      --ink-faint: #576b68;
+      --border: #d1ddda;
+      --border-strong: #a8bfba;
       --sage: #2E6F54;
       --sage-bg: rgba(46, 111, 84, 0.11);
       --terra: #B83A2E;
@@ -48,17 +47,17 @@
     html, body {
       margin: 0;
       padding: 0;
-      background-color: #F4F1EC;
+      background-color: var(--paper);
       color: var(--ink);
       font-family: var(--font-sans);
-      font-size: 14px;
+      font-size: 16px;
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
     }
 
-    .max-w-3xl {
-      max-width: 780px;
+    .desk-shell {
+      max-width: 1060px;
       width: 100%;
       margin: 0 auto;
       padding: 18px 14px 48px;
@@ -66,8 +65,10 @@
 
     /* Masthead */
     .masthead {
-      border-bottom: 2px solid var(--ink);
-      padding-bottom: 14px;
+      background: #153c3a;
+      color: #f7fbf9;
+      border-radius: var(--radius);
+      padding: 18px 22px;
       margin-bottom: 14px;
     }
 
@@ -111,6 +112,9 @@
       flex-wrap: wrap;
       margin-top: 12px;
     }
+
+    .masthead h1 { color: inherit; font-size: clamp(1.55rem, 4vw, 2rem); }
+    .masthead .subtitle { color: #d8ebe5; font-size: .9rem; }
 
     .sync-pill {
       display: inline-flex;
@@ -213,6 +217,8 @@
       margin-bottom: 14px;
       box-shadow: var(--shadow);
     }
+
+    #heroContainer { border-top: 3px solid #2e6f54; }
 
     .ed-soft {
       background: var(--paper-soft);
@@ -358,6 +364,126 @@
       height: 44px;
       flex-shrink: 0;
     }
+
+    .chart-box canvas, .chart-box-tall canvas, .spark-box canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .chart-plot { overflow: hidden; }
+    .chart-tooltip {
+      position: absolute;
+      top: 8px;
+      right: 4px;
+      pointer-events: none;
+      background: var(--paper-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 6px 8px;
+      color: var(--ink);
+      white-space: pre-line;
+      font-size: .77rem;
+      max-width: calc(100% - 8px);
+    }
+    .chart-legend, .quote-ribbon {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .chart-legend { color: var(--ink-muted); font-size: .78rem; margin-top: 8px; }
+    .chart-key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+    .quote-ribbon {
+      padding: 2px 0 8px;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .quote-tile {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--paper-soft);
+      font-size: .84rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .quote-tile time { font-size: .72rem; color: var(--ink-muted); }
+    .section-note { color: var(--ink-muted); font-size: .86rem; margin: 0 0 10px; }
+    .history-head, .setup-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .history-head .section-title, .setup-head .section-title { margin-bottom: 0; }
+    .research-audit { margin-top: 12px; color: var(--ink-muted); }
+    .research-audit summary, .trend-details summary { cursor: pointer; font-weight: 650; }
+    .research-audit p { margin: 8px 0 0; font-size: .9rem; }
+    .market-brief-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: .94rem; }
+    .trend-details { margin-top: 14px; }
+    .trend-details summary { font-size: .88rem; color: var(--ink-muted); }
+    .ranking-list { display: grid; gap: 7px; }
+    .rank-row {
+      display: grid;
+      grid-template-columns: minmax(11rem, .7fr) minmax(4rem, 1fr) 3.5rem;
+      gap: 10px;
+      align-items: center;
+      width: 100%;
+      min-height: 38px;
+      text-align: left;
+      padding: 6px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: var(--paper-soft);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: .9rem;
+    }
+    .rank-row:hover, .rank-row[aria-pressed="true"] { border-color: var(--sage); background: #e3eee7; }
+    .rank-label { min-width: 0; overflow-wrap: anywhere; }
+    .rank-track { height: 8px; border-radius: 999px; background: #d7e2dd; overflow: hidden; }
+    .rank-fill { display: block; height: 100%; background: #39776b; border-radius: inherit; }
+    .rank-score { font-family: var(--font-mono); text-align: right; }
+    .ml-select {
+      padding: 1px 3px;
+      color: inherit;
+      cursor: pointer;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      text-align: left;
+      font: inherit;
+      font-weight: inherit;
+    }
+    .ml-select:hover, .ml-select[aria-pressed="true"] { text-decoration: underline; text-decoration-thickness: 1px; }
+    [data-mainline-id].selected { border-color: var(--sage); box-shadow: inset 3px 0 var(--sage); }
+    .ml-copy { overflow-wrap: anywhere; }
+    .evidence-block { margin-top: 10px; padding: 11px 12px; border-left: 3px solid var(--border-strong); background: var(--paper-soft); }
+    .evidence-block h4 { margin: 0 0 6px; }
+    .evidence-block ul { padding-left: 1.25rem; margin: 6px 0; }
+    .evidence-block li + li { margin-top: 4px; }
+    #setupRadar { border-top: 3px solid #39776b; scroll-margin-top: 12px; }
+    .setup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .setup-card { scroll-margin-top: 14px; display: grid; align-content: start; gap: 8px; min-width: 0; }
+    .setup-card h3, .setup-card p { margin: 0; overflow-wrap: anywhere; }
+    .setup-card h3 { font-size: 1.02rem; }
+    .setup-card p { font-size: .88rem; }
+    .setup-card header { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .setup-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; margin: 0; }
+    .setup-metrics dt { color: var(--ink-muted); font-size: .76rem; }
+    .setup-metrics dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 650; font-size: .88rem; overflow-wrap: anywhere; }
+    .setup-plot-wrap { position: relative; margin: 0 0 16px; }
+    .setup-plot-wrap canvas { width: 100%; height: 240px; display: block; }
+    .setup-chart-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .setup-card:focus, :focus-visible { outline: 2px solid #326b60; outline-offset: 2px; }
+    .candidate-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .candidate-charts + .cand-grid { margin-top: 12px; }
+    .candidate-charts h3 { margin: 0 0 6px; font-size: .94rem; }
+    .radar-note, .radar-toolbar { font-size: .85rem; color: var(--ink-muted); }
+    .radar-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .radar-dimensions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .radar-dimensions button { border: 1px solid var(--border); background: var(--paper-soft); padding: 9px 12px; border-radius: 9px; color: var(--ink); cursor: pointer; }
+    .radar-dimensions button[aria-pressed="true"] { border-color: var(--slate); background: #e5eaec; }
 
     /* Mainline Card */
     .ml-head {
@@ -762,7 +888,7 @@
     }
 
     @media (max-width: 640px) {
-      .max-w-3xl {
+      .desk-shell {
         padding: 14px 10px 36px;
       }
       h1 {
@@ -771,14 +897,13 @@
       .kpi-grid,
       .cand-grid,
       .linkage-grid,
-      .radar-note, .radar-toolbar { font-size:12px; color:var(--ink-muted); line-height:1.7; }
-    .radar-toolbar { display:flex; justify-content:space-between; align-items:center; gap:10px; }
-    .radar-dimensions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
-    .radar-dimensions button { border:1px solid var(--border); background:var(--paper-soft); padding:9px 12px; border-radius:9px; color:var(--ink); cursor:pointer; }
-    .radar-dimensions button[aria-pressed="true"] { border-color:var(--slate); background:#e5eaec; }
-    .macro-metrics {
+      .macro-metrics,
+      .setup-grid,
+      .candidate-charts {
         grid-template-columns: 1fr;
       }
+      .rank-row { grid-template-columns: minmax(7.5rem, 1.3fr) minmax(3.5rem, 1fr) 2.2rem; gap: 7px; }
+      .masthead { padding: 14px; }
       .tab-btn {
         padding: 6px 9px;
         font-size: 12px;
@@ -791,17 +916,16 @@
   </style>
 </head>
 <body>
-  <div class="max-w-3xl">
+  <div class="desk-shell">
     <header class="masthead">
       <div class="masthead-top">
         <div>
-          <div class="kicker">US EQUITY RESEARCH DESK · 实盘投研只研不交易</div>
           <h1>美股交易链条观察</h1>
-          <p class="subtitle">全市场主线与联动研判 · 因果传导 / 资金轮动 / 跨资产剪刀差</p>
+          <p class="subtitle">主线传导、估值与回撤、资金轮动和跨资产验证</p>
         </div>
       </div>
       <div class="toolbar">
-        <span class="sync-pill" id="liveSyncPill">
+        <span class="sync-pill" id="liveSyncPill" role="status">
           <span class="sync-dot" id="liveSyncDot"></span>
           <span id="liveTimeText">自动实时同步中...</span>
         </span>
@@ -811,11 +935,11 @@
     </header>
 
     <nav class="tab-nav" aria-label="主视图切换">
-      <button type="button" class="tab-btn active" data-tab="chains">主线与传导</button>
-      <button type="button" class="tab-btn" data-tab="candidates">替补与轮动</button>
-      <button type="button" class="tab-btn" data-tab="linkage">跨资产联动</button>
-      <button type="button" class="tab-btn" data-tab="macro">宏观与日程</button>
-      <button type="button" class="tab-btn" data-tab="news">中文快讯</button>
+      <button type="button" class="tab-btn active" data-tab="chains" aria-pressed="true" aria-controls="panel-chains">主线与传导</button>
+      <button type="button" class="tab-btn" data-tab="candidates" aria-pressed="false" aria-controls="panel-candidates">替补与轮动</button>
+      <button type="button" class="tab-btn" data-tab="linkage" aria-pressed="false" aria-controls="panel-linkage">跨资产联动</button>
+      <button type="button" class="tab-btn" data-tab="macro" aria-pressed="false" aria-controls="panel-macro">宏观与日程</button>
+      <button type="button" class="tab-btn" data-tab="news" aria-pressed="false" aria-controls="panel-news">中文快讯</button>
     </nav>
 
     <main>
@@ -825,14 +949,41 @@
         </div>
         <div class="ed-card">
           <h2 class="section-title">
-            <span>五大主线近 11 期归一化走势</span>
-            <span class="badge tone-slate" id="overviewSessionBadge">实时基准 = 100</span>
+            <span>核心行情锚</span>
+            <span id="quoteRibbonTime" class="badge tone-slate">等待行情</span>
           </h2>
-          <div class="chart-box">
-            <canvas id="ml-overview-chart"></canvas>
-          </div>
+          <div id="quoteRibbon" class="quote-ribbon" role="region" aria-label="核心标的行情" tabindex="0"></div>
+        </div>
+        <div class="ed-card">
+          <h2 class="section-title">主线动能与估值筛选</h2>
+          <p class="section-note">选择主线可查看对应估值与回撤标的，分值采用本轮研究评分。</p>
+          <div id="mainlineMomentum" class="ranking-list"></div>
+          <details id="mainlineTrend" class="trend-details">
+            <summary>近 11 期归一化走势（期初 = 100）</summary>
+            <div class="chart-box chart-plot">
+              <canvas id="ml-overview-chart" role="img" aria-label="主线标的归一化走势"></canvas>
+            </div>
+            <div id="mainlineTrendLegend" class="chart-legend"></div>
+          </details>
         </div>
         <div id="mainlinesContainer"></div>
+        <section class="ed-card" id="setupRadar" aria-labelledby="setupHeading">
+          <div class="setup-head">
+            <h2 class="section-title" id="setupHeading" tabindex="-1">估值与回撤雷达</h2>
+            <button type="button" class="btn" id="clearSetupMainline" hidden>查看全部主线</button>
+          </div>
+          <p class="section-note" id="setupCoverage" role="status">正在读取估值与回撤数据</p>
+          <div class="filter-bar" id="setupCategories" aria-label="按观察类型筛选">
+            <button type="button" class="filter-btn active" aria-pressed="true" data-setup-category="all">全部</button>
+            <button type="button" class="filter-btn" aria-pressed="false" data-setup-category="dip">深度回撤</button>
+            <button type="button" class="filter-btn" aria-pressed="false" data-setup-category="hedge">防御对照</button>
+            <button type="button" class="filter-btn" aria-pressed="false" data-setup-category="spec">高波观察</button>
+            <button type="button" class="filter-btn" aria-pressed="false" data-setup-category="avoid">风险警示</button>
+            <button type="button" class="filter-btn" aria-pressed="false" data-setup-category="watch">待观察</button>
+          </div>
+          <div id="setupPlot" class="setup-plot-wrap"></div>
+          <div id="setupCards" class="setup-grid"></div>
+        </section>
       </section>
 
       <section id="panel-candidates" class="tab-panel">
@@ -847,32 +998,28 @@
             <button type="button" class="filter-btn" data-cfilter="watch">强化跟踪 (0)</button>
             <button type="button" class="filter-btn" data-cfilter="demote">弱化/淘汰 (0)</button>
           </div>
+          <div class="candidate-charts">
+            <section class="ed-soft">
+              <h3>20 日 × 5 日收益率</h3>
+              <div class="chart-box chart-plot">
+                <canvas id="candQuadChart" role="img" aria-label="候补资产 20 日与 5 日收益散点图"></canvas>
+              </div>
+            </section>
+            <section class="ed-soft">
+              <h3>5 日收益率对比</h3>
+              <div class="chart-box chart-plot">
+                <canvas id="candBarChart" role="img" aria-label="候补资产 5 日收益柱状图"></canvas>
+              </div>
+            </section>
+          </div>
           <div id="candidatesContainer" class="cand-grid"></div>
-        </div>
-
-        <div class="ed-card">
-          <h2 class="section-title"><span>资金轮动象限（X=20日收益% · Y=5日收益%）</span></h2>
-          <div class="chart-box-tall">
-            <canvas id="candQuadChart"></canvas>
-          </div>
-        </div>
-
-        <div class="ed-card">
-          <h2 class="section-title"><span>核心资产近 5 日强度对比（%）</span></h2>
-          <div class="chart-box">
-            <canvas id="candBarChart"></canvas>
-          </div>
-        </div>
-
-        <div class="ed-card">
-          <h2 class="section-title"><span>主线与状态机演进日志</span></h2>
-          <div id="historyLog" class="timeline-list"></div>
         </div>
       </section>
 
       <section id="panel-linkage" class="tab-panel">
         <div class="ed-card">
           <h2 class="section-title"><span>跨资产 6×6 日收益相关性矩阵</span></h2>
+          <p class="section-note" id="corrMethod">相关系数基于共同交易日的日收益率。</p>
           <div class="table-scroll" id="corrMatrixWrap"></div>
         </div>
 
@@ -883,9 +1030,10 @@
 
         <div class="ed-card">
           <h2 class="section-title"><span>30 日跨资产剪刀差走势（累计收益%）</span></h2>
-          <div class="chart-box-tall">
-            <canvas id="linkageTrendChart"></canvas>
+          <div class="chart-box-tall chart-plot">
+            <canvas id="linkageTrendChart" role="img" aria-label="跨资产 30 日累计收益走势"></canvas>
           </div>
+          <div id="linkageTrendLegend" class="chart-legend"></div>
         </div>
       </section>
 
@@ -910,6 +1058,13 @@
           <h2 class="section-title"><span>近期重要宏观与财报日程</span></h2>
           <div id="calendarContainer" class="cal-list"></div>
         </div>
+        <div class="ed-card">
+          <div class="history-head">
+            <h2 class="section-title">主线演进与复盘</h2>
+            <button type="button" class="btn" id="toggleHistory" aria-controls="historyLog" aria-expanded="false" hidden>展开全部</button>
+          </div>
+          <div id="historyLog" class="timeline-list"></div>
+        </div>
       </section>
 
       <section id="panel-news" class="tab-panel">
@@ -932,13 +1087,15 @@
       const STORE = {
         activeTab: "chains",
         candFilter: "all",
+        mainlineFilter: "",
+        setupCategory: "all",
+        historyExpanded: false,
         greenUp: false,
         live: null,
         state: null,
         news: null,
         newsError: "",
         stateError: "",
-        charts: {},
       };
 
       const MAINLINE_PALETTE = [
@@ -1068,38 +1225,204 @@
           .map(part => `<p>${escapeHtml(part)}</p>`).join("");
       }
 
-      function destroyChart(key) {
-        if (STORE.charts[key]) {
-          try {
-            STORE.charts[key].destroy();
-          } catch (_) {}
-          delete STORE.charts[key];
-        }
-      }
-
-      function makeOrReplaceChart(canvasId, config) {
-        if (typeof Chart === "undefined") return null;
-        const canvas = document.getElementById(canvasId);
+      function canvasFrame(id) {
+        const canvas = document.getElementById(id);
         if (!canvas) return null;
-        const existing = Chart.getChart ? Chart.getChart(canvas) : STORE.charts[canvasId];
-        if (existing) {
-          try { existing.destroy(); } catch (_) {}
-        }
+        const {width, height} = canvas.getBoundingClientRect();
+        if (!width || !height) return null;
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
-        config.options = config.options || {};
-        config.options.animation = config.options.animation ?? false;
-        config.options.responsive = true;
-        config.options.maintainAspectRatio = false;
-        const instance = new Chart(ctx, config);
-        STORE.charts[canvasId] = instance;
-        return instance;
+        const scale = window.devicePixelRatio || 1;
+        canvas.width = Math.round(width * scale);
+        canvas.height = Math.round(height * scale);
+        ctx.scale(scale, scale);
+        ctx.font = "12px system-ui, sans-serif";
+        return {canvas, ctx, width, height};
+      }
+
+      function chartRange(values, includeZero = false) {
+        const real = values.map(finiteOrNull).filter(value => value !== null);
+        if (includeZero) real.push(0);
+        const min = Math.min(...real), max = Math.max(...real);
+        const pad = min === max ? Math.max(1, Math.abs(max) * .05) : (max - min) * .12;
+        return [min - pad, max + pad];
+      }
+
+      function chartEmpty(frame, message = "数据暂不可用") {
+        frame.ctx.fillStyle = "#485e5d";
+        frame.ctx.textAlign = "center";
+        frame.ctx.fillText(message, frame.width / 2, frame.height / 2);
+      }
+
+      function chartSegment(ctx, x1, y1, x2, y2) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+
+      function chartDot(ctx, x, y, radius) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+
+      function chartTicks(range, count) {
+        const [min, max] = range;
+        return Array.from({length: count + 1}, (_, index) => min + index * (max - min) / count);
+      }
+
+      function chartAxes(frame, xRange, yRange, xTitle = "", yTitle = "") {
+        const {ctx, width, height} = frame;
+        const left = 47, right = width - 14, top = yTitle ? 27 : 12, bottom = height - (xTitle ? 42 : 24);
+        const x = (value) => left + (value - xRange[0]) * (right - left) / (xRange[1] - xRange[0]);
+        const y = (value) => bottom - (value - yRange[0]) * (bottom - top) / (yRange[1] - yRange[0]);
+        ctx.strokeStyle = "#d1ddda";
+        ctx.fillStyle = "#485e5d";
+        ctx.textAlign = "right";
+        for (const tick of chartTicks(yRange, 4)) {
+          const pos = y(tick);
+          chartSegment(ctx, left, pos, right, pos);
+          ctx.fillText(String(Number(tick.toPrecision(3))), left - 6, pos + 4);
+        }
+        if (xTitle) {
+          ctx.textAlign = "center";
+          for (const tick of chartTicks(xRange, width < 420 ? 3 : 5)) {
+            ctx.fillText(String(Number(tick.toPrecision(3))), x(tick), bottom + 15);
+          }
+          ctx.fillText(xTitle, (left + right) / 2, height - 5);
+        }
+        if (yTitle) {
+          ctx.textAlign = "left";
+          ctx.fillText(yTitle, left, 14);
+        }
+        if (yRange[0] < 0 && yRange[1] > 0) {
+          ctx.strokeStyle = "#7c928e";
+          chartSegment(ctx, left, y(0), right, y(0));
+        }
+        return {x, y, left, right, top, bottom};
+      }
+
+      function drawLines(canvasId, labels, series, legendId) {
+        const frame = canvasFrame(canvasId);
+        if (!frame) return;
+        const {ctx, width, height, canvas} = frame;
+        const legend = legendId && document.getElementById(legendId);
+        const allValues = series.flatMap(item => item.values).filter(value => finiteOrNull(value) !== null);
+        if (!allValues.length) {
+          if (legend) legend.innerHTML = "";
+          canvas.onpointermove = canvas.onkeydown = canvas.onfocus = null;
+          canvas.parentElement.querySelector(".chart-tooltip")?.setAttribute("hidden", "");
+          canvas.removeAttribute("tabindex");
+          chartEmpty(frame);
+          return;
+        }
+        const steps = Math.max(2, labels.length, ...series.map(item => item.values.length));
+        const yRange = chartRange(allValues);
+        const axes = legend ? chartAxes(frame, [0, steps - 1], yRange) : {
+          x: index => 3 + index * (width - 6) / (steps - 1),
+          y: value => 3 + (yRange[1] - value) * (height - 6) / (yRange[1] - yRange[0])
+        };
+        if (legend && labels.length) {
+          ctx.fillStyle = "#485e5d";
+          ctx.textAlign = "center";
+          const tickIndices = new Set([0, Math.floor((labels.length - 1) / 2), labels.length - 1]);
+          tickIndices.forEach(index => ctx.fillText(String(labels[index]).slice(-8), axes.x(index), height - 6));
+        }
+        for (const item of series) {
+          ctx.strokeStyle = ctx.fillStyle = item.color;
+          ctx.lineWidth = 2;
+          let previous = null;
+          for (let index = 0; index < item.values.length; index += 1) {
+            const value = finiteOrNull(item.values[index]);
+            if (value !== null) {
+              if (previous !== null) chartSegment(ctx, axes.x(index - 1), axes.y(previous), axes.x(index), axes.y(value));
+              if (legend) chartDot(ctx, axes.x(index), axes.y(value), 1.9);
+            }
+            previous = value;
+          }
+        }
+        if (!legend) return;
+        legend.innerHTML = series.map(item => `<span><i class="chart-key" style="background:${item.color}"></i>${escapeHtml(item.label)}</span>`).join("");
+        let tooltip = canvas.parentElement.querySelector(".chart-tooltip");
+        if (!tooltip) {
+          tooltip = document.createElement("div");
+          tooltip.className = "chart-tooltip";
+          tooltip.setAttribute("role", "status");
+          canvas.after(tooltip);
+        }
+        tooltip.hidden = true;
+        canvas.tabIndex = 0;
+        let activeIndex = steps - 1;
+        const show = (index) => {
+          activeIndex = Math.max(0, Math.min(index, steps - 1));
+          const values = series.flatMap(item => {
+            const value = finiteOrNull(item.values[activeIndex]);
+            return value === null ? [] : [`${item.label} ${value.toFixed(2)}`];
+          });
+          tooltip.textContent = [labels[activeIndex] || `第 ${activeIndex + 1} 期`, ...values].join("\n");
+          tooltip.hidden = false;
+        };
+        canvas.onpointermove = event => show(Math.round((event.offsetX - axes.left) / (axes.right - axes.left) * (steps - 1)));
+        canvas.onpointerleave = canvas.onblur = () => { tooltip.hidden = true; };
+        canvas.onfocus = () => show(activeIndex);
+        canvas.onkeydown = event => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          show(activeIndex + (event.key === "ArrowLeft" ? -1 : 1));
+        };
+      }
+
+      function drawScatter(id, points, xTitle, yTitle, onPick) {
+        const frame = canvasFrame(id);
+        if (!frame) return;
+        const {ctx, canvas} = frame;
+        if (!points.length) {
+          chartEmpty(frame);
+          return;
+        }
+        const xRange = chartRange(points.map(p => p.x), true);
+        const yRange = chartRange(points.map(p => p.y), true);
+        const axes = chartAxes(frame, xRange, yRange, xTitle, yTitle);
+        if (xRange[0] < 0 && xRange[1] > 0) {
+          ctx.strokeStyle = "#7c928e";
+          chartSegment(ctx, axes.x(0), axes.top, axes.x(0), axes.bottom);
+        }
+        const placed = [];
+        for (const point of points) {
+          const x = axes.x(point.x), y = axes.y(point.y);
+          ctx.fillStyle = point.color;
+          chartDot(ctx, x, y, 5);
+          const textWidth = ctx.measureText(point.label).width;
+          const labelX = Math.max(axes.left, Math.min(axes.right - textWidth, x + 8));
+          const candidates = [-6, 12, -19, 25, -32];
+          const labelY = candidates.map(offset => y + offset).find(row => row >= axes.top && row <= axes.bottom &&
+            !placed.some(label => Math.abs(label.y - row) < 13 && labelX < label.x + label.w + 4 && labelX + textWidth > label.x - 4));
+          if (labelY !== undefined) {
+            placed.push({x: labelX, y: labelY, w: textWidth});
+            ctx.fillStyle = "#152c2c";
+            ctx.textAlign = "left";
+            ctx.fillText(point.label, labelX, labelY);
+          }
+        }
+        const nearest = (event) => points
+          .map(point => ({point, distance: Math.hypot(axes.x(point.x) - event.offsetX, axes.y(point.y) - event.offsetY)}))
+          .reduce((best, hit) => hit.distance < best.distance ? hit : best, {distance: 13});
+        canvas.onpointermove = event => {
+          const {point} = nearest(event);
+          canvas.style.cursor = point && onPick ? "pointer" : "";
+          const title = point ? `${point.label} · ${xTitle} ${point.x.toFixed(2)} · ${yTitle} ${point.y.toFixed(2)}` : "";
+          if (canvas.title !== title) canvas.title = title;
+        };
+        canvas.onclick = onPick ? event => {
+          const {point} = nearest(event);
+          if (point) onPick(point);
+        } : null;
       }
 
       function updateSyncPill(busy, errMsg) {
         const pillText = document.getElementById("liveTimeText");
         const dot = document.getElementById("liveSyncDot");
-        const badge = document.getElementById("overviewSessionBadge");
         if (!pillText || !dot) return;
         dot.classList.remove("busy", "err");
         if (busy) {
@@ -1114,7 +1437,7 @@
         }
         const parts = [];
         if (STORE.live && STORE.live.updatedAt) {
-          parts.push("行情同步 " + STORE.live.updatedAt);
+          parts.push("行情检查 " + STORE.live.updatedAt);
           parts.push(sessionLabelCn(STORE.live.marketSession));
         } else if (STORE.state && STORE.state.meta && STORE.state.meta.updated_at_short) {
           parts.push("已同步 " + STORE.state.meta.updated_at_short);
@@ -1130,9 +1453,26 @@
           dot.classList.add("err");
         }
         pillText.textContent = parts.join(" · ");
-        if (badge && STORE.live) {
-          badge.textContent = sessionLabelCn(STORE.live.marketSession) + " · 基准=100";
-        }
+      }
+
+      const quoteTimeEt = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "America/New_York", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+      });
+
+      function renderQuoteRibbon() {
+        const el = document.getElementById("quoteRibbon");
+        const time = document.getElementById("quoteRibbonTime");
+        const prices = quoteMap();
+        time.textContent = STORE.live ? sessionLabelCn(STORE.live.marketSession) + " · 报价时间为美东" : "等待行情";
+        const symbols = [...new Set(["SPY", "QQQ", "^VIX", "^TNX", "BTC-USD", ...(STORE.state?.mainlines || []).map(row => row.anchor_sym)])];
+        const quotes = symbols.map(symbol => prices[symbol]).filter(item => item && finiteOrNull(item.price) !== null);
+        el.innerHTML = quotes.length ? quotes.map(quote => {
+          const ts = Date.parse(quote.tsUtc);
+          const date = Number.isFinite(ts) ? `<time datetime="${escapeHtml(quote.tsUtc)}">${escapeHtml(quoteTimeEt.format(ts))}</time>` : "";
+          return `<div class="quote-tile"><strong>${escapeHtml(quote.sym)}</strong>${escapeHtml(fmtPrice(quote.sym, quote.price))}
+            <span class="badge ${chgClass(quote.chg)}">${escapeHtml(fmtChg(quote.chg))}</span>${date}</div>`;
+        }).join("") : '<div class="empty-box">暂无可显示行情</div>';
       }
 
       function renderHero() {
@@ -1167,6 +1507,7 @@
           `;
         }).join("");
 
+        const auditOpen = el.querySelector(".research-audit")?.open;
         el.innerHTML = `
           <div class="hero-meta-row">
             <span class="badge tone-sage">${escapeHtml(meta.badge || "主线研判")}</span>
@@ -1176,44 +1517,148 @@
           </div>
           <h2 class="hero-headline">${escapeHtml(meta.headline || "")}</h2>
           <p class="hero-guide">${escapeHtml(meta.plain_guide || "")}</p>
-          ${meta.market_brief ? `<section class="ed-soft" style="margin:16px 0"><h3 style="margin:0 0 10px;font-size:16px">跨市场增量快报</h3><div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;font-size:14px">${escapeHtml(meta.market_brief)}</div></section>` : ""}
           <div class="hero-gate"><strong>下一验证关口：</strong>${escapeHtml(meta.next_gate || "")}</div>
           <div class="kpi-grid">${kpiHtml}</div>
-          <div class="audit-foot"><strong>六维自审：</strong>${escapeHtml(meta.self_review || "")}</div>
+          ${meta.self_review || meta.stance ? `<details class="research-audit"${auditOpen ? " open" : ""}><summary>总控姿态与六维自审</summary>
+            ${meta.stance ? `<p><strong>当前姿态：</strong>${escapeHtml(meta.stance)}</p>` : ""}
+            ${meta.self_review ? `<p><strong>六维自审：</strong>${escapeHtml(meta.self_review)}</p>` : ""}
+          </details>` : ""}
+          ${meta.market_brief ? `<section class="ed-soft" style="margin:14px 0 0"><h3 style="margin:0 0 8px;font-size:16px">跨市场增量快报</h3><div class="market-brief-text">${escapeHtml(meta.market_brief)}</div></section>` : ""}
         `;
       }
 
       function renderOverviewChart() {
-        if (!STORE.state || !Array.isArray(STORE.state.mainlines)) return;
-        const labels = (STORE.state.analytics && Array.isArray(STORE.state.analytics.sparkLabels))
-          ? STORE.state.analytics.sparkLabels
-          : [];
-        const datasets = STORE.state.mainlines.map((m, idx) => ({
-          label: `${m.id} ${m.title}`,
-          data: Array.isArray(m.spark) ? m.spark : [],
-          borderColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
-          backgroundColor: MAINLINE_PALETTE[idx % MAINLINE_PALETTE.length],
-          borderWidth: 2,
-          pointRadius: 2,
-          tension: 0.25,
-          fill: false,
+        const labels = STORE.state?.analytics?.sparkLabels || [];
+        const series = (STORE.state?.mainlines || []).map((row, index) => ({
+          label: `${row.id} ${row.title}`,
+          values: row.spark || [],
+          color: MAINLINE_PALETTE[index % MAINLINE_PALETTE.length]
         }));
-        makeOrReplaceChart("ml-overview-chart", {
-          type: "line",
-          data: { labels, datasets },
-          options: {
-            plugins: {
-              legend: {
-                position: "bottom",
-                labels: { boxWidth: 10, font: { size: 11 } },
-              },
-            },
-            scales: {
-              x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-              y: { grid: { color: "rgba(31,29,26,0.06)" }, ticks: { font: { size: 10 } } },
-            },
-          },
+        drawLines("ml-overview-chart", labels, series, "mainlineTrendLegend");
+      }
+
+      function renderMomentum() {
+        const container = document.getElementById("mainlineMomentum");
+        const rows = [...(STORE.state?.mainlines || [])].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+        container.innerHTML = rows.length ? rows.map(row => {
+          const score = finiteOrNull(row.score);
+          const width = score === null ? 0 : Math.max(0, Math.min(100, score));
+          return `<button type="button" class="rank-row" data-mainline-filter="${escapeHtml(row.id)}"
+            aria-controls="setupRadar" aria-pressed="${row.id === STORE.mainlineFilter}">
+            <span class="rank-label"><strong>${escapeHtml(row.id)}</strong> ${escapeHtml(row.title)}</span>
+            <span class="rank-track" aria-hidden="true"><span class="rank-fill" style="width:${width}%"></span></span>
+            <span class="rank-score">${score === null ? "—" : escapeHtml(score)}</span>
+          </button>`;
+        }).join("") : '<div class="empty-box">暂无主线评分</div>';
+      }
+
+      const SETUP_TONES = {
+        dip: ["ochre", "#a76332"],
+        hedge: ["sage", "#2e6f54"],
+        spec: ["slate", "#455f81"],
+        avoid: ["terra", "#b83a2e"],
+        watch: ["slate", "#596966"]
+      };
+
+      function renderSetupRadar() {
+        const setupRows = Array.isArray(STORE.state?.setups) ? STORE.state.setups : [];
+        const categories = document.getElementById("setupCategories");
+        const coverage = document.getElementById("setupCoverage");
+        const plot = document.getElementById("setupPlot");
+        const cards = document.getElementById("setupCards");
+        const reset = document.getElementById("clearSetupMainline");
+        const mainline = (STORE.state?.mainlines || []).find(row => row.id === STORE.mainlineFilter);
+        const matchingMainline = STORE.mainlineFilter ? setupRows.filter(row => row.mainline === STORE.mainlineFilter) : setupRows;
+        const visible = STORE.setupCategory === "all" ? matchingMainline : matchingMainline.filter(row => row.category === STORE.setupCategory);
+        const points = visible.flatMap((row, index) => {
+          const drawdown = finiteOrNull(row.drawdown_52w_pct);
+          const pe = finiteOrNull(row.valuation?.forward_pe);
+          if (drawdown === null || pe === null || pe <= 0) return [];
+          return [{label: row.symbol, key: index, x: Math.abs(drawdown), y: pe, color: (SETUP_TONES[row.category] || SETUP_TONES.watch)[1]}];
         });
+        categories.querySelectorAll("button").forEach(button => {
+          const active = button.dataset.setupCategory === STORE.setupCategory;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+        reset.hidden = !STORE.mainlineFilter;
+        const scope = mainline ? `${mainline.id} ${mainline.title}` : "全部主线";
+        coverage.textContent = setupRows.length
+          ? `${scope} · ${visible.length} 个观察标的 · ${points.length} 个同时具备正远期市盈率与 52 周回撤数据`
+          : STORE.state ? "当前研究快照暂无估值与回撤数据" : "正在读取估值与回撤数据";
+        plot.innerHTML = points.length ? `
+          <canvas id="setupScatterCanvas" role="img" aria-label="52 周回撤深度与远期市盈率散点图"></canvas>
+          <div class="setup-chart-links" id="setupChartLinks" aria-label="定位散点对应标的">${points.map(p =>
+            `<button type="button" class="btn" data-index="${p.key}" data-setup-focus="${escapeHtml(p.label)}"
+              aria-label="${escapeHtml(p.label)}，回撤 ${p.x.toFixed(1)}%，远期市盈率 ${p.y.toFixed(1)} 倍">${escapeHtml(p.label)}</button>`
+          ).join("")}</div>`
+          : visible.length ? '<div class="empty-box">具备两项数据的标的会显示在散点图，现有数据见下方卡片。</div>' : "";
+        cards.innerHTML = visible.length ? visible.map((row, index) => renderSetupCard(row, index)).join("")
+          : `<div class="empty-box" style="grid-column:1 / -1">${setupRows.length ? "当前筛选下暂无标的" : "等待下一轮研究同步"}</div>`;
+        drawSetupPlot(points);
+      }
+
+      function renderSetupCard(row, index) {
+        const valuation = row.valuation || {};
+        const multiple = (value) => finiteOrNull(value) === null ? "数据缺失" : `${value.toFixed(1)} 倍`;
+        const price = (value) => finiteOrNull(value) === null ? "待验证" : fmtPrice(row.symbol, value);
+        const drawdown = finiteOrNull(row.drawdown_52w_pct);
+        const discount = finiteOrNull(valuation.forward_pe_discount_pct);
+        const source = safeHttpUrl(row.source_url);
+        const valuationSource = safeHttpUrl(valuation.source_url);
+        const status = {available: "资料齐备", partial: "部分资料", unavailable: "资料待补充"}[row.evidence_status] || "资料待补充";
+        const metrics = [
+          ["价格快照", finiteOrNull(row.last_price) === null ? "数据缺失" : price(row.last_price)],
+          ["距离 52 周高点", drawdown === null ? "数据缺失" : `${Math.abs(drawdown).toFixed(1)}% 回撤`],
+          ["远期市盈率", multiple(valuation.forward_pe)],
+          ["个股历史估值中位数", multiple(valuation.reference_forward_pe)],
+          ["相对历史估值", discount === null ? "历史数据不足" : discount > 0 ? `折价 ${discount.toFixed(1)}%` : discount < 0 ? `溢价 ${Math.abs(discount).toFixed(1)}%` : "持平"],
+          ["情景收益风险比", finiteOrNull(row.reward_risk) === null ? "待验证" : `${row.reward_risk.toFixed(2)} : 1`],
+          ["情景失效价", price(row.invalidation_price)],
+          ["情景目标价", price(row.target_price)]
+        ];
+        return `<article class="ed-soft setup-card" tabindex="-1" data-setup-index="${index}" data-setup-symbol="${escapeHtml(row.symbol)}">
+          <header><h3>${escapeHtml(row.symbol)}${row.name && row.name !== row.symbol ? ` · ${escapeHtml(row.name)}` : ""}</h3>
+            <div><span class="badge tone-slate">${escapeHtml(row.mainline)}</span>
+            <span class="badge tone-${(SETUP_TONES[row.category] || SETUP_TONES.watch)[0]}">${escapeHtml(row.category_label || "待观察")}</span></div></header>
+          <dl class="setup-metrics">${metrics.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+          ${row.summary ? `<p>${escapeHtml(row.summary)}</p>` : ""}
+          ${valuation.note ? `<p class="section-note">${escapeHtml(valuation.note)}</p>` : ""}
+          ${row.scenario_note ? `<p class="section-note">${escapeHtml(row.scenario_note)}</p>` : ""}
+          <footer class="chart-legend"><span>${status}${row.as_of ? ` · ${escapeHtml(row.as_of)}` : ""}</span>
+          ${source ? `<a class="src-link" href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">行情来源</a>` : ""}
+          ${valuationSource && valuationSource !== source ? `<a class="src-link" href="${escapeHtml(valuationSource)}" target="_blank" rel="noopener noreferrer">估值来源</a>` : ""}</footer>
+        </article>`;
+      }
+
+      let setupPoints = [];
+      function drawSetupPlot(points = setupPoints) {
+        setupPoints = points;
+        if (points.length) drawScatter("setupScatterCanvas", points, "52 周回撤深度 (%)", "远期市盈率 (倍)", point => focusSetupCard(point.key));
+      }
+
+      function moveTo(element) {
+        if (!element) return;
+        element.focus({preventScroll: true});
+        element.scrollIntoView({behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start"});
+      }
+
+      function focusSetupCard(index) {
+        if (!/^\d+$/.test(String(index))) return;
+        moveTo(document.querySelector(`[data-setup-index="${index}"]`));
+      }
+
+      function selectMainline(id, jump = true) {
+        STORE.mainlineFilter = STORE.mainlineFilter === id ? "" : id;
+        STORE.setupCategory = "all";
+        renderMomentum();
+        document.querySelectorAll(".ml-select").forEach(button => {
+          const selected = button.dataset.mainlineFilter === STORE.mainlineFilter;
+          button.setAttribute("aria-pressed", String(selected));
+          button.closest("[data-mainline-id]").classList.toggle("selected", selected);
+        });
+        renderSetupRadar();
+        if (jump) moveTo(document.getElementById("setupHeading"));
       }
 
       function parseStockPairs(stocksStr) {
@@ -1282,6 +1727,23 @@
         `;
       }
 
+      function renderReasoning(line) {
+        const reasoning = line.reasoning;
+        const review = STORE.state?.anchor_reviews?.find(row => row.mainline === line.id);
+        if (!reasoning && !review) return "";
+        const fields = [["传导假设", "hypothesis"], ["确认条件", "confirmation"],
+          ["失效条件", "invalidation"], ["证据缺口", "uncertainty"]];
+        const conditions = fields.filter(([, key]) => reasoning?.[key]).map(([label, key]) =>
+          `<p><strong>${label}</strong> ${escapeHtml(reasoning[key])}</p>`).join("");
+        const evidence = (reasoning?.evidence || []).map(item => {
+          const url = safeHttpUrl(item.source_url);
+          const label = escapeHtml([item.source, item.as_of].filter(Boolean).join(" · "));
+          return `<li>${escapeHtml(item.text)} ${url ? `<a class="src-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label}</li>`;
+        }).join("");
+        const rotation = review ? `<p><strong>锚点复核</strong> ${escapeHtml(review.candidate_symbol)} 已相对 ${escapeHtml(review.anchor_symbol)} 连续领先 ${escapeHtml(review.lead_sessions)} 个样本日。日期 ${escapeHtml(review.as_of)}。</p>` : "";
+        return `<div class="evidence-block"><h4>证据与验证</h4>${evidence ? `<ul>${evidence}</ul>` : ""}${conditions}${rotation}</div>`;
+      }
+
       function renderMainlines() {
         const container = document.getElementById("mainlinesContainer");
         if (!container) return;
@@ -1291,7 +1753,6 @@
         }
         const qm = quoteMap();
 
-        Object.keys(STORE.charts).filter(k => k.startsWith("ml-spark-")).forEach(destroyChart);
         container.innerHTML = STORE.state.mainlines.map((m, idx) => {
           const steps = String(m.chain || "")
             .split(/\s*(?:\||->|→)\s*/)
@@ -1330,7 +1791,7 @@
                     <span class="badge tone-slate">Score ${escapeHtml(m.score)}</span>
                     <span style="font-size:11.5px;color:var(--ink-muted);">首次发现 ${escapeHtml(m.first_seen)}</span>
                   </div>
-                  <h3 class="ml-title">${escapeHtml(m.title)}</h3>
+                  <h3 class="ml-title"><button type="button" class="ml-select" data-mainline-filter="${escapeHtml(m.id)}" aria-controls="setupRadar" aria-pressed="${STORE.mainlineFilter === m.id}">${escapeHtml(m.title)}</button></h3>
                   <div class="ml-status">${escapeHtml(m.status)}</div>
                 </div>
                 <div class="spark-box">
@@ -1348,6 +1809,7 @@
                 <div><strong>验证计划：</strong>${researchParagraphs(m.watch_points)}</div>
               </div>
 
+              ${renderReasoning(m)}
               <div class="ml-foot">
                 <span style="color:var(--ink-muted);">锚定标的：${escapeHtml(m.anchor_sym)}</span>
                 ${srcUrl ? `<a class="src-link" href="${escapeHtml(srcUrl)}" target="_blank" rel="noopener noreferrer">来源／查阅入口 ↗</a>` : ""}
@@ -1450,7 +1912,12 @@
           `).join("");
         }
 
-        const hist = Array.isArray(STORE.state.history) ? STORE.state.history : [];
+        const history = Array.isArray(STORE.state.history) ? STORE.state.history : [];
+        const historyButton = document.getElementById("toggleHistory");
+        historyButton.hidden = history.length <= 5;
+        historyButton.textContent = STORE.historyExpanded ? "收起" : "展开全部";
+        historyButton.setAttribute("aria-expanded", String(STORE.historyExpanded));
+        const hist = STORE.historyExpanded ? history : history.slice(0, 5);
         histEl.innerHTML = hist.length
           ? hist.map((h) => `
             <div class="timeline-item">
@@ -1731,6 +2198,98 @@
           card.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center'});
         }
       }
+      let radarFrame = 0;
+
+      function makeOrReplaceChart(id, {type, data, options}) {
+        const datasets = data.datasets;
+        if (type === "line") {
+          drawLines(id, data.labels, datasets.map(row => ({
+            label: row.label, values: row.data, color: row.borderColor
+          })));
+          return;
+        }
+        if (type === "scatter") {
+          drawScatter(id, datasets[0].data.map((point, index) => ({
+            ...point, label: point.sym, color: datasets[0].backgroundColor[index]
+          })), options.scales.x.title.text, options.scales.y.title.text);
+          return;
+        }
+        const frame = canvasFrame(id);
+        if (!frame) return;
+        const {ctx, width, height} = frame;
+        if (type === "bar") {
+          const row = datasets[0];
+          const [low, high] = chartRange(row.data, true);
+          const y = value => 12 + (high - value) * (height - 45) / (high - low);
+          const step = (width - 24) / row.data.length;
+          ctx.strokeStyle = "#bdc9c6";
+          chartSegment(ctx, 12, y(0), width - 12, y(0));
+          row.data.forEach((value, index) => {
+            const x = 12 + step * (index + .5);
+            ctx.fillStyle = row.backgroundColor[index];
+            ctx.fillRect(x - step * .31, Math.min(y(0), y(value)), step * .62, Math.abs(y(value) - y(0)));
+            ctx.fillStyle = "#485e5d";
+            ctx.textAlign = "center";
+            if (step > 34 || index % 2 === 0) ctx.fillText(data.labels[index], x, height - 12, step * (step > 34 ? 1 : 2));
+          });
+          return;
+        }
+
+        cancelAnimationFrame(radarFrame);
+        const cx = width / 2, cy = height / 2;
+        const radius = Math.min(width * .29, height * .34);
+        const point = (index, score) => {
+          const angle = index * Math.PI * 2 / data.labels.length - Math.PI / 2;
+          return [cx + Math.cos(angle) * radius * score / 100, cy + Math.sin(angle) * radius * score / 100];
+        };
+        const start = performance.now();
+        const duration = options.animation?.duration || 0;
+        function paint(now) {
+          const progress = duration ? Math.min(1, Math.max(0, (now - start) / duration)) : 1;
+          ctx.clearRect(0, 0, width, height);
+          ctx.strokeStyle = "#d7dfdb";
+          for (const score of [25, 50, 75, 100]) {
+            ctx.beginPath();
+            data.labels.forEach((_, index) => ctx[index ? "lineTo" : "moveTo"](...point(index, score)));
+            ctx.closePath();
+            ctx.stroke();
+          }
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#485e5d";
+          data.labels.forEach((label, index) => {
+            chartSegment(ctx, cx, cy, ...point(index, 100));
+            ctx.fillText(label, ...point(index, 120), width * .25);
+          });
+          for (const row of [...datasets].reverse()) {
+            const complete = row.data.every(Number.isFinite);
+            ctx.strokeStyle = row.borderColor;
+            ctx.fillStyle = row.backgroundColor;
+            ctx.lineWidth = row.borderWidth;
+            ctx.setLineDash(row.borderDash || []);
+            ctx.beginPath();
+            row.data.forEach((value, index) => {
+              if (!Number.isFinite(value)) return;
+              const previous = row.data[(index + row.data.length - 1) % row.data.length];
+              ctx[index && Number.isFinite(previous) ? "lineTo" : "moveTo"](...point(index, value * progress));
+            });
+            if (complete) {ctx.closePath(); ctx.fill();}
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.lineWidth = 1;
+            ctx.fillStyle = row.borderColor;
+            row.data.forEach((value, index) => {
+              if (!Number.isFinite(value)) return;
+              ctx.beginPath();
+              ctx.arc(...point(index, value * progress), row.pointRadius || 3, 0, Math.PI * 2);
+              ctx.fill();
+            });
+          }
+          if (progress < 1) radarFrame = requestAnimationFrame(paint);
+        }
+        paint(start);
+      }
+
+      let radarAnimationTime = null;
       function renderMacroRadar(replay = false) {
         const rows = radarRows();
         const timestamp = STORE.state?.serverSyncedAt || "";
@@ -1750,11 +2309,11 @@
         const datasets = [{label:"本期代理评分",data:rows.map(r=>r.score),borderColor:"#5d7580",backgroundColor:"rgba(93,117,128,.16)",pointBackgroundColor:"#354951",pointBorderColor:"#5d7580",pointBorderWidth:3,pointRadius:5,pointHoverRadius:8,borderWidth:3,spanGaps:false}];
         if (radarPrevious) datasets.push({label:"上次观察",data:radarPrevious.scores,borderColor:"#b79c78",backgroundColor:"transparent",borderDash:[5,5],pointRadius:2,borderWidth:1.5,spanGaps:false});
         const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-        const existing = STORE.charts.macroRadarCanvas;
-        if (existing && !replay) { existing.data.datasets = datasets; existing.update(reduced ? 'none' : undefined); return; }
+        const animate = !reduced && (replay || radarAnimationTime !== timestamp);
+        radarAnimationTime = timestamp;
         makeOrReplaceChart('macroRadarCanvas', {
           type:'radar', data:{labels:rows.map(r=>r.label),datasets},
-          options:{animation:reduced ? false : {duration:850,easing:'easeOutQuart'},
+          options:{animation:!animate ? false : {duration:850,easing:'easeOutQuart'},
             onClick:(event,elements)=>{if(elements.length) selectRadarDimension(rows[elements[0].index].id);},
             plugins:{legend:{display:!!radarPrevious,position:'bottom'},tooltip:{callbacks:{afterLabel:ctx=>rows[ctx.dataIndex].m?.wind || ""}}},
             scales:{r:{min:0,max:100,ticks:{stepSize:25,backdropColor:'transparent',font:{size:10}},grid:{color:'#e0dbd3'},angleLines:{color:'#e0dbd3'},pointLabels:{font:{size:innerWidth < 500 ? 10 : 13,weight:'bold'},color:'#363c3c'}}}}
@@ -1802,13 +2361,9 @@
 
       function renderChartsForTab(tabName) {
         if (tabName === "chains") {
-          renderOverviewChart();
-          // Sparklines are already drawn by renderMainlines when data changes, ensure resize
-          Object.keys(STORE.charts).forEach((k) => {
-            if (k === "ml-overview-chart" || k.startsWith("ml-spark-")) {
-              try { STORE.charts[k].resize(); } catch (_) {}
-            }
-          });
+          renderMomentum();
+          renderSetupRadar();
+          if (document.getElementById("mainlineTrend").open) renderOverviewChart();
         } else if (tabName === "candidates") {
           renderCandidateCharts();
         } else if (tabName === "linkage") {
@@ -1819,6 +2374,7 @@
       }
 
       function renderAll() {
+        renderQuoteRibbon();
         renderHero();
         renderMainlines();
         renderCandidates();
@@ -1831,7 +2387,9 @@
       function switchTab(tabName) {
         STORE.activeTab = tabName;
         document.querySelectorAll(".tab-btn").forEach((btn) => {
-          btn.classList.toggle("active", btn.getAttribute("data-tab") === tabName);
+          const selected = btn.dataset.tab === tabName;
+          btn.classList.toggle("active", selected);
+          btn.setAttribute("aria-pressed", String(selected));
         });
         document.querySelectorAll(".tab-panel").forEach((panel) => {
           panel.classList.toggle("active", panel.id === "panel-" + tabName);
@@ -1846,6 +2404,7 @@
         if (btn) {
           btn.textContent = STORE.greenUp ? "绿涨红跌" : "红涨绿跌";
         }
+        renderQuoteRibbon();
         renderHero();
         renderMainlines();
         renderCandidates();
@@ -1909,6 +2468,7 @@
 
         const maybeRenderLiveState = () => {
           if (!liveDone || !stateDone) return;
+          renderQuoteRibbon();
           renderHero();
           renderMainlines();
           renderCandidates();
@@ -1992,6 +2552,26 @@
         });
       });
 
+      document.addEventListener("click", event => {
+        const mainline = event.target.closest("[data-mainline-filter]");
+        const category = event.target.closest("[data-setup-category]");
+        const point = event.target.closest("[data-setup-focus]");
+        if (mainline) selectMainline(mainline.dataset.mainlineFilter);
+        if (category) {
+          STORE.setupCategory = category.dataset.setupCategory;
+          renderSetupRadar();
+        }
+        if (point) focusSetupCard(point.dataset.index);
+      });
+      document.getElementById("mainlineTrend").ontoggle = () => {
+        if (document.getElementById("mainlineTrend").open) renderOverviewChart();
+      };
+      document.getElementById("clearSetupMainline").onclick = () => selectMainline(STORE.mainlineFilter, false);
+      document.getElementById("toggleHistory").onclick = () => {
+        STORE.historyExpanded = !STORE.historyExpanded;
+        renderCandidates();
+      };
+
       const colorBtn = document.getElementById("btnColorMode");
       if (colorBtn) colorBtn.addEventListener("click", togglePolarity);
 
@@ -2001,6 +2581,14 @@
       const newsReloadBtn = document.getElementById("btnNewsReload");
       if (newsReloadBtn) newsReloadBtn.addEventListener("click", () => fetchNewsOnly(true));
 
+      let redrawFrame = 0;
+      window.addEventListener("resize", () => {
+        cancelAnimationFrame(redrawFrame);
+        redrawFrame = requestAnimationFrame(() => {
+          if (STORE.activeTab === "chains") renderMainlines();
+          renderChartsForTab(STORE.activeTab);
+        });
+      });
       fetchAll(false);
       setInterval(() => {
         fetchAll(false);

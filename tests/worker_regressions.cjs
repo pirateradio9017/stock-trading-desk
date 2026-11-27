@@ -20,5 +20,18 @@ vm.runInContext(source, ctx);
   const env = {DESK_STATE:{get:async()=>state}};
   const response = await ctx.worker.fetch(new Request('https://test/api/state?force=1'),env,{});
   assert.equal((await response.json()).serverSyncedAt,state.serverSyncedAt);
-  console.log('PASS: 7 Worker assertions (early close, freshness, returns, premarket pair, research timestamp)');
+  const edgeSymbols = vm.runInContext('LIVE_SYMBOLS.map(([sym]) => sym)', ctx);
+  assert.ok(edgeSymbols.includes('TSM') && edgeSymbols.includes('LMT'));
+  ctx.fetch = async () => ({ok:true,json:async()=>({data:{items:[
+    {id:1,title:'美股将迎来财报季',uri:'https://example.com/undated'},
+    {id:2,title:'联储公布经济数据',uri:'https://example.com/dated',display_time:1700000000},
+    {id:3,title:'美国标普盘中反弹',uri:'https://example.com/future',display_time:Math.ceil(Date.now()/1000)+60},
+    {id:4,title:'纳指实时震荡',display_time:1700000000},
+  ]}})});
+  const news = await ctx.getNewsPayload({DESK_STATE:{get:async()=>null}},{},true);
+  assert.equal(news.count,3);
+  assert.equal(news.items.find(item=>item.event_id==='wscn-1').pubDate,'发布时间未提供');
+  assert.equal(news.items.find(item=>item.event_id==='wscn-2').pubDate,'2023-11-15 06:13 UTC+8');
+  assert.equal(news.items.find(item=>item.event_id==='wscn-3').pubDate,'发布时间未提供');
+  console.log('PASS: Worker assertions (early close, freshness, returns, premarket pair, research timestamp, symbol coverage, news provenance)');
 })().catch(e=>{console.error(e);process.exitCode=1});

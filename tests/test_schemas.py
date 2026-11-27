@@ -251,6 +251,8 @@ def test_state_response_full_round_trip() -> None:
     model = StateResponse.model_validate(payload)
     assert model.meta.market_brief == ""
     payload["meta"]["market_brief"] = ""
+    payload["mainlines"][0]["reasoning"] = None
+    payload.update(setups=[], anchor_reviews=[])
     assert model.model_dump() == payload
     assert StateResponse.model_validate_json(model.model_dump_json()) == model
 
@@ -443,7 +445,8 @@ def test_config_symbols_feeds_sessions_and_no_deepseek() -> None:
         "COIN",
         "MSTR",
     }
-    assert len(config.CORE_SYMBOLS) == 27
+    expected_core.update({"TSM", "LMT"})
+    assert len(config.CORE_SYMBOLS) == 29
     assert {s.sym for s in config.CORE_SYMBOLS} == expected_core
     assert len(config.APAC_SYMBOLS) == 5
     assert len(config.EU_SYMBOLS) == 3

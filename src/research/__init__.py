@@ -16,6 +16,7 @@ from src.research.analyst import (
     synthesize_research_state,
 )
 from src.research.auditor import AuditCheck, AuditReport, audit_and_repair_state
+from src.research.setups import build_anchor_reviews, build_setups
 from src.research.state_machine import (
     GovernanceDecision,
     default_state_path,
@@ -90,6 +91,9 @@ async def run_research_cycle(
 
     if not audit_report.passed:
         raise ValueError("Research audit rejected publication: " + audit_report.summary)
+
+    audited_state.setups = build_setups(audited_state.mainlines, bundle.market)
+    audited_state.anchor_reviews = build_anchor_reviews(audited_state.mainlines, bundle.market, governance)
 
     saved: Path | None = None
     if persist:

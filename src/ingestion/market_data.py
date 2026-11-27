@@ -6,13 +6,14 @@ import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote as url_quote
 
 import httpx
 import numpy as np
 import pandas as pd
+from bs4 import BeautifulSoup, SoupStrainer
 
 from src.config import (
     ALL_SYMBOLS,
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _ROTATION_GROUPS: dict[str, str] = {
     "NVDA": "AI算力",
+    "TSM": "AI算力",
     "AVGO": "AI算力",
     "AMD": "AI算力",
     "LITE": "光通信",
@@ -57,6 +59,7 @@ _ROTATION_GROUPS: dict[str, str] = {
     "SPY": "宽基指数",
     "ITB": "地产链",
     "XLE": "能源",
+    "LMT": "国防军工",
     "XLU": "公用电力",
     "XLP": "防御消费",
     "XLF": "金融",
@@ -77,6 +80,14 @@ class SymbolSeries:
     dates: list[str] = field(default_factory=list)
     closes: list[float] = field(default_factory=list)
     quote: QuoteItem | None = None
+    high_52w: float | None = None
+
+
+@dataclass(frozen=True)
+class EquityValuation:
+    forward_pe: float | None
+    historical_forward_pe: tuple[float, ...]
+    source_url: str
 
 
 @dataclass
@@ -105,6 +116,7 @@ class MarketSnapshot:
     linkage_trend: LinkageTrend
     rotation_assets: list[RotationAsset]
     movers: list[ScreenerMover] = field(default_factory=list)
+    valuations: dict[str, EquityValuation] = field(default_factory=dict)
 
     def get_quote(self, sym: str) -> QuoteItem | None:
         s = self.series_map.get(sym)
@@ -227,6 +239,8 @@ def _parse_yahoo_chart(
     reg_ts = meta.get("regularMarketTime")
     if isinstance(reg_ts, (int, float)) and reg_ts > 0:
         ts_dt = datetime.fromtimestamp(int(reg_ts), tz=timezone.utc)
+    elif dates:
+        ts_dt = datetime.combine(date.fromisoformat(dates[-1]), datetime.min.time(), tzinfo=TZ_ET)
     else:
         ts_dt = now_utc
 
@@ -245,14 +259,19 @@ def _parse_yahoo_chart(
         source="yahoo_v8",
         tsUtc=format_utc_iso(ts_dt),
     )
-    return SymbolSeries(spec=spec, dates=dates, closes=closes, quote=quote)
+    high_52w = _finite_or_none(meta.get("fiftyTwoWeekHigh"))
+    return SymbolSeries(
+        spec=spec, dates=dates, closes=closes, quote=quote,
+        high_52w=high_52w if high_52w is not None and high_52w > 0 else None,
+    )
 
 
-def _yfinance_fallback_sync(spec: SymbolSpec, now_utc: datetime) -> SymbolSeries:
+def _yfinance_fallback_sync(spec: SymbolSpec) -> SymbolSeries:
     """Synchronous yfinance fallback when Yahoo v8 HTTP endpoint fails."""
     import yfinance as yf
 
-    hist = yf.Ticker(spec.sym).history(period="3mo", interval="1d", auto_adjust=False)
+    ticker = yf.Ticker(spec.sym)
+    hist = ticker.history(period="3mo", interval="1d", auto_adjust=False)
     if hist is None or hist.empty or "Close" not in hist:
         raise ValueError(f"Empty yfinance history for {spec.sym}")
 
@@ -272,6 +291,14 @@ def _yfinance_fallback_sync(spec: SymbolSpec, now_utc: datetime) -> SymbolSeries
     chg = ((price / closes[-2]) - 1.0) * 100.0 if len(closes) >= 2 and closes[-2] > 0 else 0.0
     r5 = _compute_return(closes, 5, price)
     r20 = _compute_return(closes, 20, price)
+    metadata = ticker.history_metadata
+    regular_market_time = _finite_or_none(metadata.get("regularMarketTime"))
+    last_trade = (
+        datetime.fromtimestamp(regular_market_time, tz=timezone.utc)
+        if regular_market_time is not None and regular_market_time > 0
+        else datetime.combine(date.fromisoformat(dates[-1]), datetime.min.time(), tzinfo=TZ_ET)
+    )
+    high_52w = _finite_or_none(metadata.get("fiftyTwoWeekHigh"))
     quote = QuoteItem(
         sym=spec.sym,
         name=spec.name,
@@ -280,9 +307,64 @@ def _yfinance_fallback_sync(spec: SymbolSpec, now_utc: datetime) -> SymbolSeries
         r5=r5,
         r20=r20,
         source="yfinance",
-        tsUtc=format_utc_iso(now_utc),
+        tsUtc=format_utc_iso(last_trade),
     )
-    return SymbolSeries(spec=spec, dates=dates, closes=closes, quote=quote)
+    return SymbolSeries(
+        spec=spec, dates=dates, closes=closes, quote=quote,
+        high_52w=high_52w if high_52w is not None and high_52w > 0 else None,
+    )
+
+
+def _parse_equity_valuation(html: str, source_url: str, market_date: date) -> EquityValuation | None:
+    """Read the issuer's Current and explicitly dated Forward P/E columns."""
+    soup = BeautifulSoup(html, "html.parser", parse_only=SoupStrainer("table"))
+    for table in soup.find_all("table"):
+        headers = [cell.get_text(strip=True) for cell in table.select("thead th")]
+        if len(headers) < 2 or headers[1] != "Current":
+            continue
+        for row in table.select("tbody tr"):
+            cells = [cell.get_text(strip=True) for cell in row.find_all("td", recursive=False)]
+            if len(cells) != len(headers) or cells[0] != "Forward P/E":
+                continue
+
+            current = _finite_or_none(cells[1].replace(",", ""))
+            samples: dict[date, float] = {}
+            for heading, raw_value in zip(headers[2:], cells[2:]):
+                try:
+                    sample_date = datetime.strptime(heading, "%m/%d/%Y").date()
+                except ValueError:
+                    continue
+                value = _finite_or_none(raw_value.replace(",", ""))
+                if date.resolution <= market_date - sample_date <= timedelta(days=550) and value is not None and value > 0:
+                    samples[sample_date] = value
+            valid_samples = tuple(samples[day] for day in sorted(samples, reverse=True)[:5])
+            return EquityValuation(current if current is not None and current > 0 else None, valid_samples, source_url)
+    return None
+
+
+async def _fetch_equity_valuations(
+    client: httpx.AsyncClient, market_date: date,
+) -> dict[str, EquityValuation]:
+    sem = asyncio.Semaphore(5)
+
+    async def fetch(spec: SymbolSpec) -> tuple[str, EquityValuation | None]:
+        url = f"https://finance.yahoo.com/quote/{url_quote(spec.sym, safe='')}/key-statistics/"
+        try:
+            async with sem:
+                result = await client.get(
+                    url, headers={"User-Agent": HTTP_USER_AGENT, "Accept": "text/html"}, timeout=6.0,
+                )
+            result.raise_for_status()
+            if result.url.host != "finance.yahoo.com" or result.url.path.rstrip("/") != httpx.URL(url).path.rstrip("/"):
+                return spec.sym, None
+            return spec.sym, _parse_equity_valuation(result.text, url, market_date)
+        except httpx.HTTPError as exc:
+            logger.debug("Forward P/E unavailable for %s: %s", spec.sym, exc)
+            return spec.sym, None
+
+    equities = [spec for spec in ALL_SYMBOLS if spec.category.startswith("equity_")]
+    results = await asyncio.gather(*(fetch(spec) for spec in equities))
+    return {sym: valuation for sym, valuation in results if valuation is not None}
 
 
 async def _fetch_single_symbol(
@@ -321,7 +403,7 @@ async def _fetch_single_symbol(
                 await asyncio.sleep(0.35)
 
     try:
-        return await asyncio.to_thread(_yfinance_fallback_sync, spec, now_utc)
+        return await asyncio.to_thread(_yfinance_fallback_sync, spec)
     except Exception as yf_exc:
         logger.warning("Failed fetching %s (%s; yf=%s)", spec.sym, last_exc, yf_exc)
         return SymbolSeries(
@@ -511,6 +593,7 @@ async def fetch_market_snapshot(
     sem = asyncio.Semaphore(8)
 
     async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+        valuations_task = asyncio.create_task(_fetch_equity_valuations(client, ts_now.astimezone(TZ_ET).date()))
         tasks = [
             _fetch_single_symbol(
                 client,
@@ -528,10 +611,11 @@ async def fetch_market_snapshot(
         else:
             results = await asyncio.gather(*tasks)
             movers = []
+        valuations = await valuations_task
 
     series_map: dict[str, SymbolSeries] = {res.spec.sym: res for res in results}
 
-    # Always keep the 27 CORE_SYMBOLS first, followed by BENCHMARK_SYMBOLS.
+    # Keep core symbols first, followed by benchmark symbols.
     ordered_specs = list(CORE_SYMBOLS) + list(BENCHMARK_SYMBOLS)
     quotes: list[QuoteItem] = []
     for spec in ordered_specs:
@@ -578,4 +662,5 @@ async def fetch_market_snapshot(
         linkage_trend=linkage_trend,
         rotation_assets=rotation_assets,
         movers=movers,
+        valuations=valuations,
     )

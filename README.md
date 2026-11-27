@@ -4,10 +4,10 @@
 
 ## 架构概览
 
-- `src/config.py`: 27 个核心标的 + APAC/EU/信用宏观基准 + 6x6 相关性矩阵与 30 天剪刀差序列 + L1/L2 一手信源定义 + 美东 (`America/New_York`) 与北京时间 (`Asia/Shanghai`) 交易时段及 NYSE 算法休市日历。
+- `src/config.py`: 29 个核心标的 + APAC/EU/信用宏观基准 + 6x6 相关性矩阵与 30 天剪刀差序列 + L1/L2 一手信源定义 + 美东 (`America/New_York`) 与北京时间 (`Asia/Shanghai`) 交易时段及 NYSE 算法休市日历。
 - `src/models/schemas.py`: 严格的 Pydantic v2 API 与状态数据契约（`/api/health`、`/api/live`、`/api/state`、`/api/news`）。
 - `src/ingestion/` *(M2)*: 多市场实时与历史行情、L1 SEC EDGAR / 宏观代理信号与去重中文财经快讯。
-- `src/research/` *(M3)*: `M1–M5` 主线与 `C1–C6` 替补状态机、美东防抖动锁定、Gemini 因果链条研判与 6 维自检。
+- `src/research/` *(M3)*: `M1–M5` 主线与 `C1–C6` 替补状态机、美东防抖动锁定、DeepSeek 因果链条研判与 6 维自检。
 - `frontend/index.html`、`src/server.py`、`worker/` *(M4)*: 暖纸张风 5-Tab 单页应用、本地 FastAPI 服务与 Cloudflare Worker + KV 边缘同步。
 
 ## 本地初始化与测试 (Windows PowerShell)
@@ -20,7 +20,8 @@ py -3.12 -m venv .venv
 
 ## 环境变量
 
-- `GEMINI_API_KEY`: Google Gemini 模型研判密钥（主合成模型，无其他第三方大模型密钥依赖）
+- `DEEPSEEK_API_KEY`：DeepSeek 研判密钥。
+- `GEMINI_API_KEY`：使用 Gemini 时的研判密钥。
 - `CF_ACCOUNT_ID`: Cloudflare 账户 ID（Worker 与 KV 部署）
 - `CF_API_TOKEN`: Cloudflare API Token（Worker 与 KV 部署）
 - `DESK_DATA_DIR`: 本地运行态数据目录（默认 `automation/data`）
@@ -52,6 +53,6 @@ py -3.12 -m venv .venv
 `DEEPSEEK_API_KEY` 通过环境变量或 GitHub Actions Secret 配置；不得写入代码。
 `DESK_LLM_PROVIDER=deepseek` 指定 DeepSeek；`auto` 表示 DeepSeek 优先、Gemini 备用。
 `DEEPSEEK_MODEL` 默认 `deepseek-flash`，单次生成输出最多 12000 tokens，超时 120 秒，不做无限重试。
-生产研究每两小时更新一次；前端行情与快讯独立刷新，不因每次打开页面额外调用模型。
-GitHub Actions 可手动运行以立即更新研究；结构调整仍受交易窗口限制。
-验证：46 项 Python 测试及 7 项 Worker 断言。
+生产研究在美股盘前、盘中和盘后交易时段每两小时调度，闭市期间每四小时调度。正常收市日和提前收市日分别在美东 16:40 和 13:40 增设盘后结构复核，复核须落在交易日的有效窗口。GitHub Actions 可手动运行，前端行情与快讯可独立刷新。
+
+主线页可按主题和观察类别筛选标的，查看估值、52 周价格回撤和情景价位。远期市盈率取同一标的的历史快照做比较，样本不足时留空。每条主线保留证据来源、传导假设、确认条件和失效条件。近期快讯按来源发布时间筛选，未知时间和明确的旧稿回顾仍可在快讯页查看。

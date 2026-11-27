@@ -245,6 +245,22 @@ class MetaInfo(_DeskModel):
     market_brief: str = ""
 
 
+class ResearchEvidence(_DeskModel):
+    kind: Literal["market", "filing", "report"]
+    text: str = Field(min_length=1, max_length=450)
+    source: str = Field(min_length=1, max_length=120)
+    as_of: str | None = Field(default=None, max_length=45)
+    source_url: RequiredHttpUrl
+
+
+class MainlineReasoning(_DeskModel):
+    evidence: list[ResearchEvidence] = Field(default_factory=list, max_length=5)
+    hypothesis: str | None = Field(default=None, max_length=500)
+    confirmation: str | None = Field(default=None, max_length=500)
+    invalidation: str | None = Field(default=None, max_length=500)
+    uncertainty: str | None = Field(default=None, max_length=500)
+
+
 class MainlineItem(_DeskModel):
     id: str = Field(pattern=r"^M[1-5]$")
     title: str = Field(min_length=1)
@@ -263,6 +279,7 @@ class MainlineItem(_DeskModel):
     summary: str = Field(min_length=1)
     watch_points: str = Field(min_length=1)
     source_url: OptionalHttpUrl = ""
+    reasoning: MainlineReasoning | None = None
 
     @model_validator(mode="after")
     def _check_directional_ruler(self) -> MainlineItem:
@@ -392,6 +409,61 @@ class AnalyticsData(_DeskModel):
         return self
 
 
+class SetupValuation(_DeskModel):
+    forward_pe: FiniteFloat | None = Field(default=None, gt=0)
+    reference_forward_pe: FiniteFloat | None = Field(default=None, gt=0)
+    forward_pe_discount_pct: FiniteFloat | None = None
+    reference_observations: int = Field(default=0, ge=0, le=5)
+    note: str = Field(min_length=1)
+    source_url: OptionalHttpUrl = ""
+
+
+class ResearchSetup(_DeskModel):
+    symbol: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    mainline: str = Field(pattern=r"^M[1-5]$")
+    category: Literal["dip", "hedge", "spec", "avoid", "watch"]
+    category_label: str
+    summary: str
+    valuation: SetupValuation
+    drawdown_52w_pct: FiniteFloat | None = Field(default=None, ge=0, le=100)
+    high_52w: FiniteFloat | None = Field(default=None, gt=0)
+    last_price: FiniteFloat | None = Field(default=None, gt=0)
+    invalidation_price: FiniteFloat | None = Field(default=None, gt=0)
+    target_price: FiniteFloat | None = Field(default=None, gt=0)
+    reward_risk: FiniteFloat | None = Field(default=None, ge=0)
+    as_of: CleanTimestampStr | None = None
+    source_url: RequiredHttpUrl
+    evidence_status: Literal["available", "partial", "unavailable"]
+    scenario_note: str
+
+    @model_validator(mode="after")
+    def _check_scenario(self) -> ResearchSetup:
+        levels = (self.invalidation_price, self.target_price, self.reward_risk)
+        if all(level is None for level in levels):
+            return self
+        if any(level is None for level in levels) or self.last_price is None:
+            raise ValueError("Scenario requires both levels, price, and reward/risk")
+        if not self.invalidation_price < self.last_price < self.target_price:
+            raise ValueError("Scenario must bracket the observed price")
+        expected = (self.target_price - self.last_price) / (self.last_price - self.invalidation_price)
+        if not math.isclose(self.reward_risk, round(expected, 2), abs_tol=0.005):
+            raise ValueError("Reward/risk must agree with scenario levels")
+        return self
+
+
+class AnchorReview(_DeskModel):
+    mainline: str = Field(pattern=r"^M[1-5]$")
+    anchor_symbol: str
+    candidate_symbol: str
+    anchor_r5: FiniteFloat
+    candidate_r5: FiniteFloat
+    lead_sessions: int = Field(ge=3)
+    governance_window: str
+    structural_change_allowed: bool
+    as_of: IsoDateStr
+
+
 class StateResponse(_DeskModel):
     serverSyncedAt: SyncedTimestampStr
     meta: MetaInfo
@@ -402,6 +474,8 @@ class StateResponse(_DeskModel):
     calendar: list[CalendarEvent] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
     analytics: AnalyticsData
+    setups: list[ResearchSetup] = Field(default_factory=list, max_length=10)
+    anchor_reviews: list[AnchorReview] = Field(default_factory=list, max_length=5)
 
 
 class NewsItem(_DeskModel):
@@ -410,7 +484,7 @@ class NewsItem(_DeskModel):
     summary: str = ""
     tag: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    pubDate: CleanTimestampStr
+    pubDate: CleanTimestampStr | Literal["发布时间未提供"]
     link: RequiredHttpUrl
 
 

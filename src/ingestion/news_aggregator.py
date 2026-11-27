@@ -6,8 +6,8 @@ import asyncio
 import hashlib
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -29,6 +29,15 @@ _STRIP_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+")
+_UNKNOWN_PUB_DATE = "发布时间未提供"
+_EARLIEST_UTC = datetime.min.replace(tzinfo=timezone.utc)
+_RESEARCH_MAX_AGE = timedelta(hours=48)
+_REPRINT_RE = re.compile(r"^[【\[]?(?:旧闻重刊|旧闻重发|旧稿重刊|from the archives?)(?:[】\]:：\s]|$)", re.IGNORECASE)
+_RECAP_DATE_RE = re.compile(
+    r"^[【\[]?(?:回顾|复盘|重温|recap of|looking back at|revisiting)\s*[】\]:：]?\s*"
+    r"(?:(?P<iso>\d{4}-\d{2}-\d{2})(?!\d)|(?:(?P<year>\d{4})年)?(?P<month>\d{1,2})月(?P<day>\d{1,2})日)",
+    re.IGNORECASE,
+)
 
 _TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("M1 算力", ("英伟达", "nvidia", "nvda", "博通", "avgo", "amd", "芯片", "半导体", "算力", "gpu", "ai", "台积电", "asml", "光模块", "lumentum")),
@@ -51,7 +60,7 @@ class RawWireItem:
     source: str
     tier: str
     lang: str
-    pub_dt_utc: datetime
+    pub_dt_utc: datetime | None
     pub_date_cn: str
     link: str
     score: int = 0
@@ -59,12 +68,13 @@ class RawWireItem:
 
 @dataclass
 class AggregatedNews:
-    """Aggregated news output: /api/news Chinese response + full clustered wires for M3."""
+    """Public Chinese feed, clustered wires, and separate recent research leads."""
 
     fetched_at_utc: datetime
     response: NewsResponse
     raw_items: list[RawWireItem] = field(default_factory=list)
     feed_status: dict[str, int] = field(default_factory=dict)
+    research_items: list[RawWireItem] = field(default_factory=list)
 
 
 def _strip_html(raw_html: str) -> str:
@@ -100,25 +110,30 @@ def _classify_tag(text: str) -> str:
     return "美股快讯"
 
 
-def _parse_dt_utc(raw_dt: Any, fallback: datetime) -> datetime:
-    if isinstance(raw_dt, (int, float)) and raw_dt > 1_000_000_000:
-        return datetime.fromtimestamp(int(raw_dt), tz=timezone.utc)
+def _parse_dt_utc(raw_dt: Any, now_utc: datetime) -> datetime | None:
+    """Accept a publication timestamp with an explicit time zone or Unix seconds."""
+    parsed = None
+    if isinstance(raw_dt, str) and re.fullmatch(r"[0-9]{10}", raw_dt.strip()):
+        raw_dt = int(raw_dt)
+    if isinstance(raw_dt, (int, float)) and 1_000_000_000 < raw_dt < 10_000_000_000:
+        parsed = datetime.fromtimestamp(int(raw_dt), tz=timezone.utc)
     if isinstance(raw_dt, str) and raw_dt.strip():
         s = raw_dt.strip()
         try:
-            dt = parsedate_to_datetime(s)
-            return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-        try:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-    return fallback
+            parsed = parsedate_to_datetime(s)
+        except (TypeError, ValueError):
+            try:
+                parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+    if parsed is None or parsed.utcoffset() is None or parsed > now_utc:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
-def _format_pubdate_cn(dt_utc: datetime) -> str:
+def _format_pubdate_cn(dt_utc: datetime | None) -> str:
+    if dt_utc is None:
+        return _UNKNOWN_PUB_DATE
     return dt_utc.astimezone(TZ_CN).strftime("%Y-%m-%d %H:%M UTC+8")
 
 
@@ -207,10 +222,7 @@ def _parse_rss_payload(spec: FeedSpec, xml_text: str, now_utc: datetime) -> list
         if not title or not link:
             continue
 
-        dt_utc = _parse_dt_utc(
-            getattr(entry, "published", None) or getattr(entry, "updated", None),
-            now_utc,
-        )
+        dt_utc = _parse_dt_utc(getattr(entry, "published", None), now_utc)
         if is_zh:
             summary = raw_summary[:240] if len(raw_summary) >= 6 else f"{title}（来源：{spec.name}）"
             score = 80
@@ -236,7 +248,7 @@ def _parse_rss_payload(spec: FeedSpec, xml_text: str, now_utc: datetime) -> list
     return out
 
 
-def _parse_finviz_html(spec: FeedSpec, html_text: str, now_utc: datetime) -> list[RawWireItem]:
+def _parse_finviz_html(spec: FeedSpec, html_text: str) -> list[RawWireItem]:
     soup = BeautifulSoup(html_text, "lxml")
     out: list[RawWireItem] = []
     seen_links: set[str] = set()
@@ -258,8 +270,8 @@ def _parse_finviz_html(spec: FeedSpec, html_text: str, now_utc: datetime) -> lis
                 source=spec.name,
                 tier=spec.tier,
                 lang="en",
-                pub_dt_utc=now_utc,
-                pub_date_cn=_format_pubdate_cn(now_utc),
+                pub_dt_utc=None,
+                pub_date_cn=_UNKNOWN_PUB_DATE,
                 link=link,
                 score=45,
             )
@@ -271,10 +283,10 @@ def _parse_finviz_html(spec: FeedSpec, html_text: str, now_utc: datetime) -> lis
 
 def deduplicate_wire_items(items: list[RawWireItem]) -> list[RawWireItem]:
     """Cluster near-duplicate stories across wires and assign deterministic `event_id`."""
-    # Sort best tier & newest timestamp first so the strongest Chinese wire wins each cluster.
+    # Prefer dated Chinese wires, then the stronger source and later publication.
     ranked = sorted(
         items,
-        key=lambda x: (x.lang == "zh", x.score, x.pub_dt_utc.timestamp()),
+        key=lambda x: (x.lang == "zh", x.pub_dt_utc is not None, x.score, x.pub_dt_utc or _EARLIEST_UTC),
         reverse=True,
     )
 
@@ -303,12 +315,45 @@ def deduplicate_wire_items(items: list[RawWireItem]) -> list[RawWireItem]:
             suffix += 1
         seen_ids.add(event_id)
 
-        item.event_id = event_id
-        clusters.append((norm, sh, item))
+        clusters.append((norm, sh, replace(item, event_id=event_id)))
 
     deduped = [entry[2] for entry in clusters]
-    deduped.sort(key=lambda x: x.pub_dt_utc, reverse=True)
+    deduped.sort(key=lambda x: x.pub_dt_utc or _EARLIEST_UTC, reverse=True)
     return deduped
+
+
+def _is_explicit_old_recap(title: str, publication_day: date) -> bool:
+    if _REPRINT_RE.match(title):
+        return True
+    matched = _RECAP_DATE_RE.match(title)
+    if not matched:
+        return False
+    try:
+        if iso_day := matched["iso"]:
+            event_day = date.fromisoformat(iso_day)
+        else:
+            month = int(matched["month"])
+            year = int(matched["year"]) if matched["year"] else publication_day.year
+            if not matched["year"] and publication_day.month == 1 and month == 12:
+                year -= 1
+            event_day = date(year, month, int(matched["day"]))
+    except ValueError:
+        return False
+    return publication_day - event_day >= timedelta(days=2)
+
+
+def select_research_wires(items: list[RawWireItem], now_utc: datetime) -> list[RawWireItem]:
+    """Screen for recent publication and explicit archival headlines before clustering."""
+    oldest = now_utc - _RESEARCH_MAX_AGE
+    eligible = []
+    for item in items:
+        published = item.pub_dt_utc
+        if published is None or not oldest <= published <= now_utc:
+            continue
+        publication_day = published.astimezone(TZ_CN if item.lang == "zh" else timezone.utc).date()
+        if not _is_explicit_old_recap(item.title, publication_day):
+            eligible.append(item)
+    return deduplicate_wire_items(eligible)
 
 
 async def _fetch_feed(
@@ -331,7 +376,7 @@ async def _fetch_feed(
             if spec.kind in ("rss", "atom"):
                 return spec.key, _parse_rss_payload(spec, resp.text, now_utc)
             if spec.kind == "html":
-                return spec.key, _parse_finviz_html(spec, resp.text, now_utc)
+                return spec.key, _parse_finviz_html(spec, resp.text)
             return spec.key, []
         except Exception as exc:
             logger.debug("Feed %s failed: %s", spec.key, exc)
@@ -440,4 +485,5 @@ async def fetch_aggregated_news(
         response=response,
         raw_items=deduped,
         feed_status=feed_status,
+        research_items=select_research_wires(all_raw, ts_now),
     )

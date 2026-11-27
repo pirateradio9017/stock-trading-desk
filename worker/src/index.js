@@ -41,6 +41,8 @@ const LIVE_SYMBOLS = [
   ["XLF", "金融 ETF"],
   ["SPY", "标普500 ETF"],
   ["GLD", "黄金 ETF"],
+  ["TSM", "台积电"],
+  ["LMT", "洛克希德·马丁"],
 ];
 
 const CORS_HEADERS = {
@@ -433,14 +435,19 @@ async function getNewsPayload(env, ctx, force) {
       summary = contentText;
     }
     if (!title || countChineseChars(title) < 4) continue;
-    const link = (raw.uri || raw.reference?.uri || "").trim() || `https://wallstreetcn.com/live/global`;
-    if (!/^https?:\/\//i.test(link)) continue;
+    const link = [raw.uri, raw.global_more_uri, raw.reference?.uri]
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim())
+      .find((value) => /^https?:\/\//i.test(value));
+    if (!link) continue;
     const key = title.slice(0, 28);
     if (seen.has(key)) continue;
     seen.add(key);
 
     const tsSec = Number(raw.display_time);
-    const dt = Number.isFinite(tsSec) && tsSec > 0 ? new Date(tsSec * 1000) : new Date();
+    const publishedAt = tsSec > 1_000_000_000 && tsSec * 1000 <= Date.now()
+      ? formatCnNewsDate(new Date(tsSec * 1000))
+      : "发布时间未提供";
     const tag = classifyNewsTag(`${title} ${summary}`);
     const sumClean = summary && summary !== title ? summary.slice(0, 140) : `对应 ${tag} 市场动态追踪。`;
     const eventId = `wscn-${raw.id || seen.size}`;
@@ -451,7 +458,7 @@ async function getNewsPayload(env, ctx, force) {
       summary: sumClean,
       tag,
       source: "华尔街见闻",
-      pubDate: formatCnNewsDate(dt),
+      pubDate: publishedAt,
       link,
     };
     if (isRelevantToUsDesk(tag, `${title} ${summary}`)) {

@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from statistics import median
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -36,11 +37,14 @@ from src.models.schemas import (
     MacroChainId,
     MacroDimItem,
     MainlineItem,
+    MainlineReasoning,
+    ResearchEvidence,
     MetaInfo,
     RotationAsset,
     StateResponse,
     Tone,
 )
+from src.research.setups import build_anchor_reviews
 from src.research.state_machine import GovernanceDecision
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,13 @@ class _DraftMeta(BaseModel):
     btc_note: str = Field(description="基于当前实测 BTC 价格与涨跌幅的一句流动性解读")
 
 
+class _DraftReasoning(BaseModel):
+    hypothesis: str = Field(max_length=300, description="仅写一句传导假设，区分推断与事实")
+    confirmation: str = Field(max_length=200, description="一句可观察的确认条件")
+    invalidation: str = Field(max_length=200, description="一句能削弱或推翻假设的条件")
+    uncertainty: str = Field(max_length=200, description="一句核心证据缺口或替代解释")
+
+
 class _DraftMainline(BaseModel):
     id: Literal["M1", "M2", "M3", "M4", "M5"]
     title: str = Field(description="主线标题，8-18字")
@@ -92,6 +103,7 @@ class _DraftMainline(BaseModel):
     summary: str = Field(description="2-3句专业因果与量价证据拆解")
     watch_points: str = Field(description="具体盯盘价位/成交量/公告触发条件")
     source_url: str = Field(description="必须从 Briefing 的 VERIFIED_URLS 中原样选取一条最相关 URL")
+    reasoning: _DraftReasoning | None = None
 
 
 class _DraftCandidate(BaseModel):
@@ -180,12 +192,12 @@ def _collect_context_urls(bundle: IngestionBundle) -> list[tuple[str, str]]:
         _add(f"SEC {f.sym} {f.form} ({f.filing_date})", f.url)
     for m in bundle.primary.macro_proxies:
         _add(f"Macro {m.chain_id}", m.source_url)
-    for n in bundle.news.response.items[:20]:
+    for symbol, valuation in bundle.market.valuations.items():
+        if valuation.forward_pe is not None:
+            _add(f"Yahoo {symbol} 预期市盈率", valuation.source_url)
+    for n in bundle.news.research_items[:20]:
         _add(f"新闻[{n.tag}] {n.title[:28]}", n.link)
-    for r in bundle.news.raw_items[:8]:
-        if r.lang == "en":
-            _add(f"Wire[{r.source}] {r.title[:32]}", r.link)
-    return items[:24]
+    return items
 
 
 def build_research_context(
@@ -215,6 +227,12 @@ def build_research_context(
         for m in prev_state.mainlines:
             lines.append(f"  上期论点 {m.anchor_sym}: {m.summary[:500]} | 验证节点: {m.watch_points[:300]}")
         lines.append("  上一期候补: " + "; ".join(f"{c.id}:{c.name}({c.tier})" for c in prev_state.candidates))
+        for review in build_anchor_reviews(prev_state.mainlines, market, decision):
+            lines.append(
+                f"  同主题换锚复核 {review.mainline}: {review.anchor_symbol} 5D {review.anchor_r5:+.2f}% | "
+                f"{review.candidate_symbol} 5D {review.candidate_r5:+.2f}% | "
+                f"连续 {review.lead_sessions} 个同日窗口领先≥3个百分点（截至 {review.as_of}）。"
+            )
 
     lines.append("\n=== 3. 核心跨资产实测行情（禁止编造） ===")
     macro_syms = [
@@ -231,15 +249,24 @@ def build_research_context(
     lines.append("\n=== 4. 行业板块与核心个股动量（按20D强弱排序） ===")
     sector_syms = [
         "ITB", "XLP", "XLU", "AAPL", "QQQ", "SPY", "XLF", "XLE",
-        "SOXX", "SMH", "ASML", "NVDA", "AVGO", "AMD", "LITE",
+        "SOXX", "SMH", "ASML", "NVDA", "AVGO", "AMD", "LITE", "TSM", "LMT",
         "CRWV", "IREN", "NBIS", "COIN", "MSTR",
     ]
     sector_quotes = [market.get_quote(s) for s in sector_syms]
     sector_quotes_valid = [q for q in sector_quotes if q is not None]
     sector_quotes_valid.sort(key=lambda q: q.r20 if q.r20 is not None else -999.0, reverse=True)
     for q in sector_quotes_valid:
+        valuation = market.valuations.get(q.sym)
+        current_pe = valuation.forward_pe if valuation is not None else None
+        samples = valuation.historical_forward_pe if valuation is not None else ()
+        reference = median(samples) if len(samples) >= 3 else None
+        val_info = (
+            f" | Yahoo 预期市盈率={current_pe:.2f}倍"
+            + (f"，同公司最近 {len(samples)} 个有效历史点中位={reference:.2f}倍" if reference is not None else "")
+            if current_pe is not None else ""
+        )
         lines.append(
-            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}"
+            f"  {q.sym:6s} ({q.name}): 现价={_fmt_num(q.price)} | 日={_fmt_pct(q.chg)} | 5D={_fmt_pct(q.r5)} | 20D={_fmt_pct(q.r20)}{val_info}"
         )
 
     if bundle.primary.apac_eu_summary:
@@ -279,13 +306,9 @@ def build_research_context(
         for f in bundle.primary.sec_filings[:8]:
             lines.append(f"  {f.filing_date} | {f.sym} {f.form} (Items: {f.items or '-'}) | {f.url}")
 
-    lines.append("\n=== 9. 高信噪比聚类快讯（中文 + 英文核心Wire） ===")
-    for n in bundle.news.response.items[:20]:
-        lines.append(f"  [ZH|{n.source}|{n.tag}] {n.title} ({n.pubDate}) | 摘要（非全文核验）: {n.summary[:1000]} | {n.link}")
-    en_wires = [r for r in bundle.news.raw_items if r.lang == "en"]
-    en_wires.sort(key=lambda x: x.score, reverse=True)
-    for r in en_wires[:10]:
-        lines.append(f"  [EN|{r.source}|{r.tag}] {r.title}")
+    lines.append("\n=== 9. 近 48 小时发布时间可识别的媒体快讯 ===")
+    for n in bundle.news.research_items[:20]:
+        lines.append(f"  [{n.lang.upper()}|{n.source}|{n.tag}] {n.title}（来源发布时间 {n.pub_date_cn}） | 摘要（未核验原文）: {n.summary[:600]} | {n.link}")
 
     lines.append("\n=== 10. 未来日程 ===")
     for ev in bundle.primary.calendar_events[:6]:
@@ -316,6 +339,8 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
    - headline 只说本轮最重要变化；plain_guide 用三句话分别解释事实、影响、下一步观察。
    - 每条 summary 按“新增事实；较上期变化；传导假设；反证/不确定性”组织。没有新增证据就明确写“本轮无新增证据”，不能把旧闻改写成新催化。
    - plain 解释为什么值得关注，不重复价格；watch_points 同时写验证条件和失效条件，不将价格涨跌直接等同于基本面逻辑证伪。
+   - 每条主线附 reasoning，hypothesis / confirmation / invalidation / uncertainty 各一句，分别写传导假设、可观察确认条件、反证条件、证据缺口，每句尽量不超过 45 字，避免复述长文。来源时间是媒体发布时间，不能当作事件发生时间。
+   - 换锚复核只是候选信号。锁定期沿用已接受锚定标的；开放窗口结合当前量价、估值及独立证据复核，若接受换锚，重新写齐该标的的逻辑、确认位与失效位，禁止继承旧锚价位。
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
    - 相关性仅描述历史共变；股价上涨不能直接证明机构净流入、需求增长或订单兑现。
    - 候补解释为何尚未成为主线、缺哪项证据，以及替代哪条主线的条件；不强行制造行业催化。
@@ -338,14 +363,10 @@ def _pick_url_for_keywords(
     for f in bundle.primary.sec_filings:
         if f.sym.lower() in kws:
             return f.url
-    for n in bundle.news.response.items:
+    for n in bundle.news.research_items:
         blob = f"{n.title} {n.summary} {n.tag}".lower()
         if any(k in blob for k in kws):
             return n.link
-    for r in bundle.news.raw_items:
-        blob = f"{r.title} {r.tag}".lower()
-        if any(k in blob for k in kws):
-            return r.link
     return default_url
 
 
@@ -478,7 +499,7 @@ def build_deterministic_draft(
             "key": "ai_compute",
             "title": "AI 算力核心与半导体硬件链",
             "anchor": "NVDA",
-            "syms": ["NVDA", "AVGO", "SOXX", "AMD"],
+            "syms": ["NVDA", "AVGO", "TSM", "SOXX"],
             "kws": ("nvda", "英伟达", "avgo", "amd", "半导体", "芯片", "算力", "ai"),
             "fallback_url": "https://www.sec.gov/edgar/browse/?CIK=0001045810",
             "chain_up": "云厂商 AI 资本开支维持高景气 | 核心 GPU/ASIC 与半导体 ETF 获增量买盘 | 龙头带动纳指风险偏好回暖",
@@ -509,9 +530,9 @@ def build_deterministic_draft(
         },
         {
             "key": "commodities_hedge",
-            "title": "贵金属能源与大宗通胀对冲链",
+            "title": "大宗通胀、能源与地缘防御链",
             "anchor": "GC=F",
-            "syms": ["GC=F", "SI=F", "XLE", "BZ=F"],
+            "syms": ["GC=F", "XLE", "LMT", "BZ=F"],
             "kws": ("黄金", "白银", "原油", "通胀", "关税", "gold", "oil", "tariff"),
             "fallback_url": "https://fred.stlouisfed.org/series/BAMLH0A0HYM2",
             "chain_up": "地缘扰动与通胀黏性反复 | 避险买盘与大宗补库推升黄金及油气 | 能源与贵金属板块形成组合对冲",
@@ -572,12 +593,12 @@ def build_deterministic_draft(
         old = next((m for m in (prev_state.mainlines if prev_state else []) if m.anchor_sym == anchor), None)
         change = f"较上期评分变化 {score - old.score:+d} 分（启发式动量评分）。" if old else "首次纳入，尚无上期可比较。"
         summary += "【变化】" + change
-        event = next((n for n in bundle.news.response.items if n.link == source_url), None)
+        event = next((n for n in bundle.news.research_items if n.link == source_url), None)
         filing = next((f for f in bundle.primary.sec_filings if f.url == source_url), None)
         if filing:
             summary += f"【已采集线索】{filing.sym} 的 {filing.form} 申报（{filing.filing_date}）；采集到申报索引不代表已核验正文或盈利影响。"
         elif event:
-            summary += f"【已采集线索】{event.source}（{event.pubDate}）：{event.title}。该条为新闻线索，尚未完成原文交叉核验。"
+            summary += f"【已采集线索】{event.source}（发布于 {event.pub_date_cn}）：{event.title}。媒体内容待核验。"
         else:
             summary += "【证据缺口】本轮未取得可直接关联的事件线索，当前判断仅基于量价。"
         summary += "【传导假设】" + chain.replace("|", "→") + "；价格强弱不证明订单、现金流或机构买入。"
@@ -604,6 +625,12 @@ def build_deterministic_draft(
                 summary=summary,
                 watch_points=watch_points,
                 source_url=source_url,
+                reasoning=_DraftReasoning(
+                    hypothesis=chain.replace("|", "→"),
+                    confirmation=f"下一交易日核对 {anchor} 与同主线标的能否同向运行并维持相对强弱。",
+                    invalidation="锚定标的反向运行且同主线表现背离时，下调短线传导判断。",
+                    uncertainty="量价只能确认盘面表现；需求、订单和资金流向仍需核验。",
+                ),
             )
         )
 
@@ -849,6 +876,32 @@ def _extract_syms(stocks: str) -> list[str]:
     return [p.split(":", 1)[0].strip() for p in (stocks or "").split(",") if ":" in p]
 
 
+def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle) -> list[ResearchEvidence]:
+    evidence: list[ResearchEvidence] = []
+    quote = bundle.market.get_quote(anchor)
+    if quote and quote.price is not None:
+        evidence.append(ResearchEvidence(
+            kind="market", text=f"{anchor} 价格 {_fmt_num(quote.price)}，5 日变化 {_fmt_pct(quote.r5)}。",
+            source="Yahoo Finance", as_of=quote.tsUtc,
+            source_url=f"https://finance.yahoo.com/quote/{anchor}",
+        ))
+    for filing in bundle.primary.sec_filings:
+        if filing.url == url:
+            evidence.append(ResearchEvidence(
+                kind="filing", text=f"{filing.sym} 提交 {filing.form}，采集到申报索引。",
+                source="SEC EDGAR", as_of=str(filing.filing_date), source_url=url,
+            ))
+            break
+    for report in bundle.news.research_items:
+        if report.link == url:
+            evidence.append(ResearchEvidence(
+                kind="report", text=report.title[:450], source=report.source[:120],
+                as_of=report.pub_date_cn, source_url=url,
+            ))
+            break
+    return evidence
+
+
 def draft_to_state_response(
     draft: ResearchDraft,
     bundle: IngestionBundle,
@@ -914,6 +967,10 @@ def draft_to_state_response(
                 summary=dm.summary,
                 watch_points=dm.watch_points,
                 source_url=dm.source_url,
+                reasoning=MainlineReasoning(
+                    **(dm.reasoning.model_dump() if anchor == dm.anchor_sym and dm.reasoning else {}),
+                    evidence=_mainline_evidence(anchor, dm.source_url, bundle),
+                ),
             )
         )
 

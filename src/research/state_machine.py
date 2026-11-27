@@ -448,7 +448,8 @@ def evolve_state(
                 new_plain = matched.plain if same_anchor else prev_m.plain
                 new_summary = matched.summary if same_anchor else prev_m.summary
                 new_watch = matched.watch_points if same_anchor else prev_m.watch_points
-                new_url = matched.source_url or prev_m.source_url
+                new_url = (matched.source_url or prev_m.source_url) if same_anchor else prev_m.source_url
+                new_reasoning = matched.reasoning if same_anchor else None
                 cand_accel = matched.accel if same_anchor else prev_m.accel
                 cand_flip = matched.flip if same_anchor else prev_m.flip
             else:
@@ -458,6 +459,7 @@ def evolve_state(
                 new_summary = prev_m.summary
                 new_watch = prev_m.watch_points
                 new_url = prev_m.source_url
+                new_reasoning = None
                 cand_accel = prev_m.accel
                 cand_flip = prev_m.flip
 
@@ -477,6 +479,7 @@ def evolve_state(
                         "summary": new_summary,
                         "watch_points": new_watch,
                         "source_url": new_url,
+                        "reasoning": new_reasoning,
                     }
                 )
             )

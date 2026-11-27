@@ -2,7 +2,10 @@ name: Stock Trading Desk Pipeline & Cloud Sync
 
 on:
   schedule:
-    - cron: "7 */2 * * *"
+    - cron: "7 */4 * * *"
+    - cron: "7 2,6,10,14,18,22 * * *"
+    - cron: "40 13,16 * * 1-5"
+      timezone: America/New_York
   workflow_dispatch:
     inputs:
       force_rebalance:
@@ -37,12 +40,41 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Resolve research schedule
+        id: research-slot
+        env:
+          DESK_EVENT_NAME: ${{ github.event_name }}
+          DESK_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          from src.config import get_market_session, get_research_window
+
+          now = datetime.now(timezone.utc)
+          session = get_market_session(now)
+          window = get_research_window(now)
+          schedule = os.environ["DESK_SCHEDULE"]
+          if os.environ["DESK_EVENT_NAME"] == "workflow_dispatch" or schedule == "7 */4 * * *":
+              run = True
+          elif schedule == "40 13,16 * * 1-5":
+              run = window == "REBALANCE_WINDOW"
+          else:
+              run = session in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"run={str(run).lower()}", file=output)
+          print(f"Research slot: {session} / {window}, run={run}")
+          PY
+
       - name: Install dependencies
+        if: steps.research-slot.outputs.run == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run research pipeline and publish KV (DESK_STATE)
+        if: steps.research-slot.outputs.run == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DESK_LLM_PROVIDER: deepseek
