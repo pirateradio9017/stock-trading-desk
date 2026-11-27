@@ -33,13 +33,6 @@
       --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
-    body.green-up {
-      --up: #2E6F5E;
-      --up-bg: #EAF3F0;
-      --down: #C43E32;
-      --down-bg: #FDECEB;
-    }
-
     * { box-sizing: border-box; }
     html { font-size: 16px; }
     body {
@@ -61,7 +54,7 @@
 
     /* Header & Pill Nav */
     .hdr { margin-bottom: 14px; }
-    .hdr-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .hdr-top { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items:start; gap:12px; }
     .hdr-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
     .hdr h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--ink); }
     .subtitle { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
@@ -161,7 +154,9 @@
     .bar-bg { width: 100%; height: 6px; border-radius: 999px; background: #E9E4D8; overflow: hidden; }
     .bar-fill { height: 100%; border-radius: 999px; transition: width .25s ease; }
     .kpi-note { font-size: 11px; color: var(--muted); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .kpi-mini + .kpi-mini { padding-top: 6px; border-top: 1px dashed var(--border); }
+    .kpi-split { display:grid; grid-template-rows:repeat(2,1fr); gap:0; padding-block:0; }
+    .kpi-mini { display:grid; align-content:center; padding:9px 0; min-width:0; }
+    .kpi-mini + .kpi-mini { border-top: 1px dashed var(--border); }
 
     .blue-box {
       background: var(--blue-bg); border: 1px solid var(--blue-bd); border-radius: 12px;
@@ -220,7 +215,7 @@
       padding: 4px 6px; border-radius: 10px; cursor: pointer; text-align: left; font: inherit;
     }
     .mom-row:hover, .mom-row[aria-pressed="true"] { background: rgba(46,111,94,.08); border-color: rgba(46,111,94,.25); }
-    .mom-lbl { font-size: 12.5px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mom-lbl { font-size: 12.5px; font-weight: 700; color: var(--ink); overflow-wrap:anywhere; }
     .mom-track { height: 14px; border-radius: 999px; background: #EAE6DC; overflow: hidden; }
     .mom-fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
     .mom-val { font-family: var(--mono); font-size: 12.5px; font-weight: 700; text-align: right; color: var(--ink); }
@@ -394,12 +389,35 @@
     .overseas { padding:.75rem 1rem; border-left:3px solid var(--ochre); background:var(--sub); }
     .cand-card { padding:1rem 1.15rem; }
     @media(max-width:640px) {
-      #heroContainer .grid-3 { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+      .hdr-top { grid-template-columns:1fr auto; align-items:center; row-gap:6px; }
+      .hdr-left { display:contents; }
+      .hdr-left .sync-pill { grid-row:2; grid-column:1/-1; justify-self:start; }
+      .hdr-top .btn-row { grid-column:2; grid-row:1; justify-self:end; }
+      .sec-head { flex-direction:column; align-items:stretch; }
+      .sec-head > button,.sec-head > span { align-self:flex-start; }
+      .headline { text-wrap:wrap; }
+      .m-head > div,.m-watch > div { width:100%; }
+      .m-anchor { flex-wrap:wrap; }
+      .link-card .pill,.m-head .pill { white-space:normal; max-width:100%; }
+      .hero-top { justify-content:flex-start; gap:.3rem .6rem; }
+      .warm-box,.blue-txt,.m-watch,.feed-body { word-break:normal; overflow-wrap:break-word; }
+      #heroContainer .grid-3 { grid-template-columns:1fr; gap:8px; }
       #heroContainer .blue-box { grid-column:1/-1; }
       #heroContainer .kpi-row { flex-wrap:wrap; }
       .sync-pill { white-space:normal; }
       .headline { font-size:1.15rem; line-height:1.45; }
     }
+    .corr-reading { padding:.65rem 0; }
+    .corr-reading > div:first-child,.corr-scale { display:flex; justify-content:space-between; gap:.5rem; align-items:baseline; }
+    .corr-reading strong { font-size:1rem; }
+    .corr-reading b { font:700 1.1rem var(--mono); }
+    .corr-track { margin-top:.4rem; height:16px; border-radius:5px; background:#e7e4dd; position:relative; }
+    .corr-track::after { content:""; position:absolute; left:50%; inset-block:-3px; width:1px; background:var(--ink); }
+    .corr-track i { position:absolute; inset-block:0; border-radius:4px; }
+    .corr-scale { font-size:.875rem; color:var(--muted); }
+    .plot-key { display:flex; flex-wrap:wrap; gap:6px; }
+    .plot-key button { color:var(--ink); font:600 .875rem var(--sans); background:white; border:1px solid var(--border); padding:6px 9px; border-radius:6px; cursor:pointer; }
+    #setupPlot { min-width:0; }
   </style>
 </head>
 <body>
@@ -414,7 +432,6 @@
           </span>
         </div>
         <div class="btn-row">
-          <button type="button" class="btn" id="btnColorMode">红涨绿跌</button>
           <button type="button" class="btn" id="btnRefreshAll">刷新</button>
         </div>
       </div>
@@ -522,7 +539,7 @@
           <div class="sec-head">
             <div>
               <h2 class="sec-title">跨资产相关性热力矩阵</h2>
-              <p class="sec-sub">颜色随顶部「红涨绿跌」模式实时联动 · +1 为同向，−1 为反向</p>
+              <p class="sec-sub">相关系数从 −1 到 +1，越接近两端，反向或同向关系越强。</p>
             </div>
           </div>
           <div class="table-scroll" id="corrMatrixWrap"></div>
@@ -743,21 +760,6 @@
         return { PRE_MARKET: "盘前", INTRADAY: "盘中", AFTER_HOURS: "盘后", HOLIDAY: "休市", OFF_HOURS: "闭市" }[s] || "已同步";
       }
 
-      /* Color Convention Toggle */
-      function initColorMode() {
-        const greenUp = localStorage.getItem("desk-color-mode") === "green-up";
-        document.body.classList.toggle("green-up", greenUp);
-        const btn = document.getElementById("btnColorMode");
-        btn.textContent = greenUp ? "绿涨红跌" : "红涨绿跌";
-        btn.onclick = () => {
-          const next = !document.body.classList.contains("green-up");
-          document.body.classList.toggle("green-up", next);
-          localStorage.setItem("desk-color-mode", next ? "green-up" : "red-up");
-          btn.textContent = next ? "绿涨红跌" : "红涨绿跌";
-          if (STORE.state) { renderCandidateCharts(); renderLinkage(); }
-        };
-      }
-
       /* Sync Status Pill */
       function updateSyncPill() {
         const pill = document.getElementById("liveSyncPill");
@@ -825,7 +827,7 @@
               <div class="bar-bg"><div class="bar-fill" style="width:${vixPct.toFixed(1)}%;background:${vixColor};"></div></div>
               <div class="kpi-note" title="${fmtHtml(meta.vix_note || "")}">${fmtHtml(meta.vix_note || "波动率监控")}</div>
             </div>
-            <div class="kpi-box">
+            <div class="kpi-box kpi-split">
               <div class="kpi-mini" data-kpi="^TNX">
                 <div class="kpi-row">
                   <span class="kpi-lbl">10Y 美债</span>
@@ -920,6 +922,13 @@
       }
 
       /* Mainlines & Momentum */
+      function scoreLabel(m) {
+        const title = String(m.title || "").trim();
+        if (title && [...title].length <= 8) return title;
+        const topic = title.match(/AI算力|先进封装|光通信|光模块|半导体设备|晶圆制造|长债避险|宏观通胀|加密流动性|能源与半导体|住宅建筑|公用事业|银行信用/);
+        return topic?.[0] || ASSET_CN[m.anchor_sym] || m.anchor_sym || m.id;
+      }
+
       function renderMomentum() {
         const el = document.getElementById("mainlineMomentum");
         const rows = [...(STORE.state?.mainlines || [])];
@@ -929,7 +938,7 @@
           const s = Math.max(0, Math.min(100, Number(m.score) || 0));
           const color = m.action_tone === "terra" ? "var(--terra)" : m.action_tone === "ochre" ? "var(--ochre)" : "var(--sage)";
           return `<button type="button" class="mom-row" data-mainline-filter="${esc(m.id)}" aria-pressed="${STORE.mainlineFilter === m.id}">
-            <span class="mom-lbl">${esc(m.id)} ${esc(m.title)}</span>
+            <span class="mom-lbl" title="${esc(m.title)}">${esc(m.id)} ${esc(scoreLabel(m))}</span>
             <span class="mom-track"><span class="mom-fill" style="width:${s}%;background:${color};display:block;"></span></span>
             <span class="mom-val">${s}分</span>
           </button>`;
@@ -1115,41 +1124,32 @@
 
         const plotEl = document.getElementById("setupPlot");
         if (pts.length) {
-          const W = 760, H = 235, L = 54, R = 36, T = 20, B = 34;
-          const xMax = Math.max(40, ...pts.map(p => p.x)) * 1.12;
-          const yMax = Math.max(35, ...pts.map(p => p.y)) * 1.15;
-          const gx = x => L + (x / xMax) * (W - L - R);
-          const gy = y => H - B - (y / yMax) * (H - T - B);
-          const mx = gx(xMax * 0.45), my = gy(yMax * 0.5);
-
-          const quads = `
-            <rect x="${L}" y="${T}" width="${mx - L}" height="${my - T}" fill="#EEF2EE" opacity=".75"/>
-            <rect x="${mx}" y="${T}" width="${W - R - mx}" height="${my - T}" fill="#FBF5E8" opacity=".8"/>
-            <rect x="${L}" y="${my}" width="${mx - L}" height="${H - B - my}" fill="#EAEFEA" opacity=".75"/>
-            <rect x="${mx}" y="${my}" width="${W - R - mx}" height="${H - B - my}" fill="#E6EFEA" opacity=".95"/>
-            <line x1="${mx}" y1="${T}" x2="${mx}" y2="${H - B}" stroke="#C9C4B8" stroke-dasharray="4 4"/>
-            <line x1="${L}" y1="${my}" x2="${W - R}" y2="${my}" stroke="#C9C4B8" stroke-dasharray="4 4"/>
-            <text x="${L + 10}" y="${T + 16}" fill="#47627A" font-size="11" font-weight="700">低波高估值观察</text>
-            <text x="${mx + 10}" y="${T + 16}" fill="#B87D2B" font-size="11" font-weight="700">深跌高波博弈</text>
-            <text x="${L + 10}" y="${H - B - 10}" fill="#2E6F5E" font-size="11" font-weight="700">低波防御估值底</text>
-            <text x="${mx + 10}" y="${H - B - 10}" fill="#2E6F5E" font-size="11" font-weight="700">★ 深跌 + 低 PE 安全垫区</text>
-            <text x="${(L + W - R) / 2}" y="${H - 8}" text-anchor="middle" fill="#666F69" font-size="11">距 52 周高点回撤深度 (%) → 越右跌越深</text>
-            <text x="16" y="${(T + H - B) / 2}" text-anchor="middle" transform="rotate(-90 16 ${(T + H - B) / 2})" fill="#666F69" font-size="11">远期市盈率 (倍)</text>
-          `;
-          const placed = [];
-          const dots = pts.map(p => {
-            const cx = gx(p.x), cy = gy(p.y);
-            let ly = cy + 4;
-            for (const off of [4, -12, 18, -24]) {
-              if (!placed.some(q => Math.abs(q.x - (cx + 10)) < 46 && Math.abs(q.y - (cy + off)) < 14)) { ly = cy + off; break; }
-            }
-            placed.push({ x: cx + 10, y: ly });
-            return `<g class="svg-dot" data-setup-focus="${p.idx}" style="cursor:pointer;">
-              <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="7.5" fill="${p.color}" stroke="#FFF" stroke-width="2"/>
-              <text x="${(cx + 11).toFixed(1)}" y="${ly.toFixed(1)}" fill="#1E2320" font-size="11.5" font-weight="700" font-family="var(--mono)">${esc(p.sym)}</text>
-            </g>`;
-          }).join("");
-          plotEl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="回撤深度与远期市盈率四象限图">${quads}${dots}</svg>`;
+          const W = Math.max(240, plotEl.clientWidth - 34 || 300);
+          const H = W < 480 ? 300 : 370, L = 40, R = 20, T = 36, B = 48;
+          const xMax = Math.max(40, Math.ceil(Math.max(...pts.map(p => p.x)) / 20) * 20);
+          const yMax = Math.max(40, Math.ceil(Math.max(...pts.map(p => p.y)) / 20) * 20);
+          const gx = x => L + x / xMax * (W - L - R);
+          const gy = y => H - B - y / yMax * (H - T - B);
+          const midX = gx(xMax * .45), midY = gy(yMax / 2);
+          const zones = `<rect x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}" fill="#f0f2ed"/>
+            <rect x="${midX}" y="${T}" width="${W-R-midX}" height="${midY-T}" fill="#f8ead7"/>
+            <rect x="${midX}" y="${midY}" width="${W-R-midX}" height="${H-B-midY}" fill="#daebe4"/>
+            <path d="M ${midX} ${T} V ${H-B} M ${L} ${midY} H ${W-R}" stroke="#9b9a8d" stroke-dasharray="4 4"/>`;
+          let grid = "";
+          for (let i = 0; i <= 4; i++) {
+            const x = gx(xMax*i/4), y = gy(yMax*i/4);
+            grid += `<path d="M ${L} ${y} H ${W-R} M ${x} ${T} V ${H-B}" stroke="#d5d2ca" fill="none"/>
+              <text x="${L-7}" y="${y+4}" text-anchor="end">${yMax*i/4}</text>
+              <text x="${x}" y="${H-B+18}" text-anchor="middle">${xMax*i/4}%</text>`;
+          }
+          const dots = pts.map((p,i) => `<g data-setup-focus="${p.idx}" style="cursor:pointer">
+            <title>${esc(p.sym)} · 回撤 ${p.x.toFixed(1)}% · 远期 PE ${p.y.toFixed(1)} 倍</title>
+            <circle cx="${gx(p.x)}" cy="${gy(p.y)}" r="10" fill="${p.color}" stroke="white" stroke-width="2"/>
+            <text x="${gx(p.x)}" y="${gy(p.y)+4}" text-anchor="middle" fill="white" font-weight="700">${i+1}</text></g>`).join("");
+          const key = pts.map((p,i) => `<button type="button" data-setup-focus="${p.idx}">${i+1} · ${esc(p.sym)}　回撤 ${p.x.toFixed(1)}% · PE ${p.y.toFixed(1)}</button>`).join("");
+          plotEl.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="font:13px var(--sans);fill:var(--ink)" role="img" aria-label="距52周高点回撤与远期市盈率散点图">
+            <text x="${L}" y="17" font-size="15">远期市盈率（倍）</text>
+            ${zones}${grid}${dots}<text x="${(L+W-R)/2}" y="${H-4}" text-anchor="middle" font-size="15">距52周高点回撤（%）</text></svg><div class="plot-key">${key}</div>`;
         } else {
           plotEl.innerHTML = '<div class="empty-box">具备正远期市盈率与 52 周回撤数据的标的将显示于此，下方卡片展示全部观察锚。</div>';
         }
@@ -1346,9 +1346,8 @@
         const mat = an.corrMatrix || [];
         const up = cssVar("--up") || "#C43E32";
         const dn = cssVar("--down") || "#2E6F5E";
-        const greenUp = document.body.classList.contains("green-up");
-        const upRgba = a => greenUp ? `rgba(46,111,94,${a})` : `rgba(196,62,50,${a})`;
-        const dnRgba = a => greenUp ? `rgba(196,62,50,${a})` : `rgba(46,111,94,${a})`;
+        const upRgba = a => `rgba(196,62,50,${a})`;
+        const dnRgba = a => `rgba(46,111,94,${a})`;
 
         const mWrap = document.getElementById("corrMatrixWrap");
         if (rawLabels.length && mat.length) {
@@ -1374,26 +1373,16 @@
         const stories = STORE.state?.linkage || [];
         const barEl = document.getElementById("linkageBarSvg");
         if (stories.length) {
-          const W = 740, rowH = 38, H = stories.length * rowH + 16, lblRight = 185, mid = 465, maxBar = 205;
-          const rowsSvg = stories.map((it, i) => {
-            const cStr = String(it.corr || "");
-            const m = cStr.match(/[+-]\d+\.\d+/) || cStr.match(/相关[^\d+-]*([+-]?\d+(?:\.\d+)?)/);
-            const rawVal = m ? parseFloat(m[1] ?? m[0]) : 0;
-            const val = Number.isFinite(rawVal) ? Math.max(-1, Math.min(1, rawVal)) : 0;
-            const y = 12 + i * rowH;
-            const w = Math.max(4, Math.abs(val) * maxBar);
-            const x = val >= 0 ? mid : mid - w;
-            const col = val >= 0 ? up : dn;
-            const lblX = val >= 0 ? x + w + 8 : x - 8;
-            const anc = val >= 0 ? "start" : "end";
-            const shortPair = humanizeCopy(it.pair).replace(/\s*[（(][^）)]*[）)]/g, "").slice(0, 14);
-            return `
-              <text x="${lblRight}" y="${y + 18}" text-anchor="end" fill="#1E2320" font-size="12" font-weight="700">${esc(shortPair)}</text>
-              <rect x="${x.toFixed(1)}" y="${y + 5}" width="${w.toFixed(1)}" height="18" rx="6" fill="${col}"/>
-              <text x="${lblX.toFixed(1)}" y="${y + 18}" text-anchor="${anc}" fill="${col}" font-size="12" font-weight="700" font-family="var(--mono)">${val > 0 ? "+" : ""}${val.toFixed(2)}</text>
-            `;
-          }).join("");
-          barEl.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><line x1="${mid}" y1="6" x2="${mid}" y2="${H - 6}" stroke="#D6D1C6" stroke-width="1.5"/>${rowsSvg}</svg>`;
+          barEl.innerHTML = stories.map(it => {
+            const match = String(it.corr || "").match(/(?:相关(?:系数)?\s*[:：]?\s*|^)([+−-]?\d+(?:\.\d+)?)/)
+              || String(it.corr || "").match(/([+−-]\d+(?:\.\d+)?)/);
+            const val = match ? Number(match[1].replace("−", "-")) : null;
+            const valid = val !== null && Math.abs(val) <= 1;
+            const pct = valid ? Math.abs(val) * 50 : 0;
+            const pair = humanizeCopy(it.pair).replace(/\s*[（(][A-Z0-9.^=/ -]+[）)]/g, "");
+            return `<div class="corr-reading"><div><strong>${esc(pair)}</strong><b>${valid ? (val > 0 ? "+" : "") + val.toFixed(2) : "待核对"}</b></div>
+              <div class="corr-track"><i style="left:${val < 0 ? 50 - pct : 50}%;width:${pct}%;background:${val < 0 ? dn : up}"></i></div></div>`;
+          }).join("") + '<div class="corr-scale"><span>−1 反向</span><span>0</span><span>同向 +1</span></div>';
         } else {
           barEl.innerHTML = '<div class="empty-box">暂无联动读数</div>';
         }
@@ -1725,7 +1714,14 @@
       document.getElementById("btnRefreshNews").onclick = () => fetchNews(true);
 
       /* Boot */
-      initColorMode();
+      let plotWidth = 0;
+      new ResizeObserver(([entry]) => {
+        const width = Math.round(entry.contentRect.width);
+        if (width && width !== plotWidth && STORE.state) {
+          plotWidth = width;
+          renderSetupRadar();
+        }
+      }).observe(document.getElementById("setupPlot"));
       loadCache();
       if (STORE.state) applyState(); else if (STORE.live) renderQuoteRibbon();
       if (STORE.news) renderNews();
