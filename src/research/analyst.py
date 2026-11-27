@@ -45,6 +45,7 @@ from src.models.schemas import (
     StateResponse,
     Tone,
 )
+from src.research.rotation import ranked_baskets
 from src.research.setups import build_anchor_reviews
 from src.research.state_machine import GovernanceDecision
 
@@ -286,6 +287,11 @@ def build_research_context(
         f"跨时区实盘提醒: {cross_tz_note}",
     ]
 
+    ranks = ranked_baskets(market)
+    if ranks:
+        lines.append("本轮美股主题等权篮子，按相对标普动量排序。开放窗口逐一复核领先主题能否替代旧主线；盘前另述亚欧领先证据、对应主题和美国现货确认条件。")
+        for row in ranks:
+            lines.append(f"{row['as_of']} {row['name']} {','.join(row['members'])}：{row['plain']} 20日 {row['r20']:+.2f}%。")
     if prev_state is not None:
         lines.append("\n=== 2. 上一期主线骨架（防抖参考） ===")
         for m in prev_state.mainlines:

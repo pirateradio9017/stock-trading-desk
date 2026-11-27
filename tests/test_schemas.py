@@ -252,7 +252,8 @@ def test_state_response_full_round_trip() -> None:
     assert model.meta.market_brief == ""
     payload["meta"]["market_brief"] = ""
     payload["mainlines"][0]["reasoning"] = None
-    payload.update(setups=[], anchor_reviews=[])
+    payload.update(setups=[], anchor_reviews=[], rotation_note="", overseas_watch="", theme_comparison=[])
+    payload["candidates"][0].update(as_of=None, excess5=None)
     assert model.model_dump() == payload
     assert StateResponse.model_validate_json(model.model_dump_json()) == model
 

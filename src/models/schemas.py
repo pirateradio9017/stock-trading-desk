@@ -303,6 +303,8 @@ class CandidateItem(_DeskModel):
     first_seen: IsoDateStr
     stale_days: int = Field(default=0, ge=0)
     history_log: str = ""
+    as_of: IsoDateStr | None = None
+    excess5: FiniteFloat | None = None
 
 
 class LinkageStory(_DeskModel):
@@ -464,10 +466,22 @@ class AnchorReview(_DeskModel):
     as_of: IsoDateStr
 
 
+class ThemeComparison(_DeskModel):
+    name: str
+    members: list[str]
+    as_of: IsoDateStr
+    r5: FiniteFloat
+    r20: FiniteFloat
+    excess5: FiniteFloat
+
+
 class StateResponse(_DeskModel):
+    theme_comparison: list[ThemeComparison] = Field(default_factory=list)
     serverSyncedAt: SyncedTimestampStr
     meta: MetaInfo
     mainlines: list[MainlineItem] = Field(default_factory=list)
+    overseas_watch: str = ""
+    rotation_note: str = ""
     candidates: list[CandidateItem] = Field(default_factory=list)
     linkage: list[LinkageStory] = Field(default_factory=list)
     macro: list[MacroDimItem] = Field(default_factory=list)

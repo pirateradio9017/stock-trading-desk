@@ -135,7 +135,13 @@ BENCHMARK_SYMBOLS: tuple[SymbolSpec, ...] = (
     US_FUTURES_SYMBOLS + APAC_SYMBOLS + EU_SYMBOLS + CREDIT_MACRO_SYMBOLS
 )
 ALL_SYMBOLS: tuple[SymbolSpec, ...] = (
-    CORE_SYMBOLS + BENCHMARK_SYMBOLS + AUXILIARY_BENCHMARK_SYMBOLS
+    CORE_SYMBOLS + BENCHMARK_SYMBOLS + AUXILIARY_BENCHMARK_SYMBOLS + (
+        SymbolSpec("COHR", "相干公司", "equity_optical"),
+        SymbolSpec("XHB", "住宅建筑 ETF", "sector_etf"),
+        SymbolSpec("KBE", "银行 ETF", "sector_etf"),
+        SymbolSpec("XOP", "油气勘探 ETF", "sector_etf"),
+        SymbolSpec("VST", "Vistra 电力", "equity_power"),
+    )
 )
 SYMBOL_SPEC_MAP: dict[str, SymbolSpec] = {s.sym: s for s in ALL_SYMBOLS}
 SYMBOL_NAME_MAP: dict[str, str] = {s.sym: s.name for s in ALL_SYMBOLS}

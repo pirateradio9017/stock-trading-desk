@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from src.ingestion import IngestionBundle
-from src.models.schemas import StateResponse
+from src.models.schemas import StateResponse, ThemeComparison
 from src.research.analyst import (
     ResearchDraft,
     SynthesisOutput,
@@ -16,6 +16,8 @@ from src.research.analyst import (
     synthesize_research_state,
 )
 from src.research.auditor import AuditCheck, AuditReport, audit_and_repair_state
+from src.config import TZ_ET
+from src.research.rotation import THEMES, overseas_watch, ranked_baskets, rotation_candidates
 from src.research.setups import build_anchor_reviews, build_setups
 from src.research.state_machine import (
     GovernanceDecision,
@@ -81,8 +83,21 @@ async def run_research_cycle(
         bundle.market,
         history_note=synthesis.history_note,
     )
+    ranks = ranked_baskets(bundle.market)
+    if len(ranks) >= 6:
+        candidates = rotation_candidates(ranks, evolved.mainlines, prev_state.candidates if prev_state else [],
+                                         now_utc.astimezone(TZ_ET).date().isoformat())
+        note = f"美股行情截至 {ranks[0]['as_of']} · {len(ranks)}/{len(THEMES)} 个主题数据齐全。按1日、5日、20日相对标普涨幅加权（40%、45%、15%），展示前六。"
+    else:
+        candidates = prev_state.candidates if prev_state else evolved.candidates
+        note = f"本轮仅 {len(ranks)}/{len(THEMES)} 个主题数据齐全，暂停横向排名。" + ("展示上期候补。" if prev_state else "展示初始研究候补。")
     evolved = evolved.model_copy(
         update={
+            "candidates": candidates,
+            "rotation_note": note,
+            "theme_comparison": [ThemeComparison(name=r["name"], members=list(r["members"]), as_of=r["as_of"],
+                                                 r5=r["r5"], r20=r["r20"], excess5=r["rs5"]) for r in ranks],
+            "overseas_watch": overseas_watch(bundle.market),
             "setups": build_setups(evolved.mainlines, bundle.market),
             "anchor_reviews": build_anchor_reviews(evolved.mainlines, bundle.market, governance),
         }

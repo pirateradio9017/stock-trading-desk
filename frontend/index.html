@@ -379,6 +379,26 @@
       .m-head { flex-wrap: wrap; }
       .m-watch { flex-direction: column; gap: 6px; }
     }
+    .comparison { margin:0 0 1rem; }
+    .comparison table { width:100%; font-size:.875rem; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+    .comparison td,.comparison th { padding:.5rem .3rem; text-align:right; border-bottom:1px solid var(--border); }
+    .comparison td:first-child,.comparison th:first-child { text-align:left; }
+    .comparison small { display:block; color:var(--muted); }
+    .rotation-jump { display:flex; justify-content:space-between; flex-wrap:wrap; gap:.5rem; width:100%; padding:.8rem 0; margin-top:.6rem; border:0; border-block:1px solid var(--border); background:transparent; color:var(--ink); cursor:pointer; text-align:left; font:inherit; font-weight:650; }
+    .rotation-jump span:last-child { color:var(--sage); }
+    .cand-read,.overseas { margin:.3rem 0; font-size:1rem; line-height:1.65; }
+    .cand-title { font-size:1.1rem; }
+    .cand-rule,.rotation-charts { margin-top:auto; font-size:.875rem; }
+    .rotation-charts { margin-top:1rem; }
+    .overseas { padding:.75rem 1rem; border-left:3px solid var(--ochre); background:var(--sub); }
+    .cand-card { padding:1rem 1.15rem; }
+    @media(max-width:640px) {
+      #heroContainer .grid-3 { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+      #heroContainer .blue-box { grid-column:1/-1; }
+      #heroContainer .kpi-row { flex-wrap:wrap; }
+      .sync-pill { white-space:normal; }
+      .headline { font-size:1.15rem; line-height:1.45; }
+    }
   </style>
 </head>
 <body>
@@ -397,7 +417,7 @@
           <button type="button" class="btn" id="btnRefreshAll">刷新</button>
         </div>
       </div>
-      <p class="subtitle">挖掘市场交易主线 · 估值安全垫与回撤雷达 · 追踪替补升降级 · 读懂跨资产联动</p>
+
     </header>
 
     <nav class="nav" id="mainNav" aria-label="主视图切换">
@@ -469,16 +489,19 @@
         <div class="card">
           <div class="sec-head">
             <div>
-              <h2 class="sec-title">潜力替补主线池 · 升降级判定</h2>
-              <p class="sec-sub">追踪连续走强的晋级方向与弱化淘汰方向（C1–C6）</p>
+              <h2 class="sec-title">板块轮动</h2>
+              <p class="sec-sub" id="rotationNote"></p><p id="overseasWatch" class="overseas" hidden></p>
             </div>
           </div>
           <div class="f-row" id="candidateFilterBar" style="margin-bottom:14px;">
             <button type="button" class="f-btn active" data-cfilter="all">全部 (0)</button>
-            <button type="button" class="f-btn" data-cfilter="upgrade">↑ 准备升级 (0)</button>
-            <button type="button" class="f-btn" data-cfilter="watch">● 强化跟踪 (0)</button>
-            <button type="button" class="f-btn" data-cfilter="demote">↓ 弱化/淘汰 (0)</button>
+            <button type="button" class="f-btn" data-cfilter="upgrade">晋升观察 (0)</button>
+            <button type="button" class="f-btn" data-cfilter="watch">继续观察 (0)</button>
+            <button type="button" class="f-btn" data-cfilter="demote">转弱观察 (0)</button>
           </div>
+          <details class="quiet comparison"><summary>全部主题排名与成分</summary><div id="themeComparison" class="table-scroll"></div></details>
+          <div id="candidatesContainer" class="grid-2"></div>
+          <details class="quiet rotation-charts"><summary>查看动量分布与涨跌对比</summary>
           <div class="grid-2" style="margin-bottom:14px;">
             <div class="chart-box">
               <h3>动量四象限（20日 vs 5日涨跌幅）</h3>
@@ -489,7 +512,7 @@
               <div id="candBarSvg"></div>
             </div>
           </div>
-          <div id="candidatesContainer" class="grid-2"></div>
+          </details>
         </div>
       </section>
 
@@ -751,10 +774,12 @@
           txt.textContent = STORE.stateErr;
           return;
         }
-        if (STORE.stateSource === "cache" && STORE.liveSource === "cache") pill.classList.add("cached");
-        const stamp = STORE.state?.meta?.updated_at_short || STORE.live?.updatedAtEt || STORE.live?.updatedAt || "已同步";
-        const sess = STORE.live ? sessionCn(STORE.live.marketSession) : "";
-        txt.textContent = `云端已同步 · ${stamp}${sess ? " · " + sess : ""}`;
+        const partial = STORE.stateErr || STORE.liveErr;
+        pill.classList.toggle("cached", Boolean(partial) || STORE.stateSource === "cache");
+        const research = STORE.state?.meta?.updated_at_short || "待更新";
+        const quotes = STORE.live?.updatedAtEt || "待更新";
+        txt.textContent = `${partial ? "部分同步失败 · " : ""}研究 ${research} · 行情 ${quotes}`;
+
       }
 
       /* Hero Brief */
@@ -786,7 +811,7 @@
             <span class="hero-time">${esc(meta.updated_at || meta.updated_at_short || "")}</span>
           </div>
           <h2 class="headline">${fmtHtml(meta.headline || "")}</h2>
-          <div class="warm-box"><strong>一句话看懂：</strong>${fmtHtml(meta.plain_guide || "")}</div>
+          <div class="warm-box">${fmtHtml(meta.plain_guide || "")}</div>
           <div class="grid-3" style="margin-top:12px;">
             <div class="kpi-box" data-kpi="^VIX">
               <div class="kpi-row">
@@ -826,6 +851,7 @@
               <div class="blue-txt">${fmtHtml(meta.next_gate || "等待下一交易窗口验证")}</div>
             </div>
           </div>
+          ${STORE.state.rotation_note && STORE.state.candidates?.length ? `<button type="button" class="rotation-jump" id="rotationJump"><span>候补轮动 · ${esc(STORE.state.candidates[0].name)}</span><span>查看比较 ›</span></button>` : ""}
           <div class="drawer-row">
             ${meta.stance || meta.self_review ? `<details class="quiet" data-drawer="audit"${auditOpen ? " open" : ""}>
               <summary>查看本轮六维自审与总控姿态</summary>
@@ -1188,7 +1214,7 @@
         const ord = { upgrade: 0, watch: 1, demote: 2 };
         return (STORE.state?.candidates || [])
           .filter(c => STORE.candFilter === "all" || c.tier === STORE.candFilter)
-          .sort((a, b) => (ord[a.tier] ?? 3) - (ord[b.tier] ?? 3));
+          .sort((a, b) => a.as_of && b.as_of ? 0 : (ord[a.tier] ?? 3) - (ord[b.tier] ?? 3));
       }
 
       function renderCandidateCharts() {
@@ -1264,13 +1290,21 @@
 
       function renderCandidates() {
         const all = STORE.state?.candidates || [];
+        document.getElementById("rotationNote").textContent = STORE.state?.rotation_note || "上期研究候补";
+        const comparison = document.getElementById("themeComparison");
+        const themes = STORE.state?.theme_comparison || [];
+        comparison.parentElement.hidden = !themes.length;
+        comparison.innerHTML = `<table><thead><tr><th>主题 / 等权成员</th><th>5日</th><th>20日</th><th>5日超额<br>百分点</th></tr></thead><tbody>${themes.map(t => `<tr><td>${esc(t.name)}<small>${esc(t.members.join(" · "))}</small></td><td>${esc(fmtChg(t.r5))}</td><td>${esc(fmtChg(t.r20))}</td><td>${esc(Number(t.excess5).toFixed(2))}</td></tr>`).join("")}</tbody></table>`;
+        const overseas = document.getElementById("overseasWatch");
+        overseas.textContent = STORE.state?.overseas_watch ? "盘前海外观察 · " + STORE.state.overseas_watch : "";
+        overseas.hidden = !overseas.textContent;
         const cnt = {
           all: all.length,
           upgrade: all.filter(c => c.tier === "upgrade").length,
           watch: all.filter(c => c.tier === "watch").length,
           demote: all.filter(c => c.tier === "demote").length,
         };
-        const lbls = { all: `全部 (${cnt.all})`, upgrade: `↑ 准备升级 (${cnt.upgrade})`, watch: `● 强化跟踪 (${cnt.watch})`, demote: `↓ 弱化/淘汰 (${cnt.demote})` };
+        const lbls = { all: `全部 (${cnt.all})`, upgrade: `晋升观察 (${cnt.upgrade})`, watch: `继续观察 (${cnt.watch})`, demote: `转弱观察 (${cnt.demote})` };
         document.querySelectorAll("[data-cfilter]").forEach(b => {
           const k = b.dataset.cfilter;
           b.textContent = lbls[k] || "";
@@ -1288,16 +1322,16 @@
                   <span class="mini-tag">${esc(c.id)}</span>
                   <span class="pill ${toneCls(c.tone)}">${esc(c.tier_label)}</span>
                 </div>
-                <span class="faint" style="font-size:11px;">入池 ${esc(c.first_seen)}</span>
+                <span class="faint" style="font-size:13px;">入池 ${esc(c.first_seen)}</span>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <span class="pill ${chgCls(c.r5)}">5日 ${esc(fmtChg(c.r5))}</span>
                 <span class="pill ${chgCls(c.r20)}">20日 ${esc(fmtChg(c.r20))}</span>
               </div>
               <h3 class="cand-title">${fmtHtml(c.name)}</h3>
-              <div class="muted" style="font-size:11.5px;">挂钩：${esc(c.linked_to)} · ${esc(stocksLabel || "--")}</div>
-              <div style="font-size:12.5px;color:#2C322F;"><strong>白话解读：</strong>${fmtHtml(c.plain)}</div>
-              <div class="cand-rule"><strong>考核规则：</strong>${fmtHtml(c.rule)}</div>
+              <div class="muted" style="font-size:14px;">挂钩：${esc(c.linked_to)} · ${esc(stocksLabel || "--")}</div>
+              <p class="cand-read">${fmtHtml(c.plain)}</p>
+              <details class="quiet cand-rule"><summary>判定依据与记录</summary><p>${fmtHtml(c.rule)}</p><p>${esc(c.history_log || "")}</p></details>
             </article>
           `;
         }).join("") : '<div class="empty-box" style="grid-column:1/-1;">当前筛选下暂无候补方向</div>';
@@ -1636,6 +1670,7 @@
       }
 
       document.addEventListener("click", ev => {
+        if (ev.target.closest("#rotationJump")) { switchTab("candidates"); window.scrollTo(0, 0); return; }
         const tabBtn = ev.target.closest(".tab-btn[data-tab]");
         if (tabBtn) { switchTab(tabBtn.dataset.tab); return; }
 
