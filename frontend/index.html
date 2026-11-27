@@ -499,11 +499,13 @@
     .setup-plot-wrap canvas { width: 100%; height: 240px; display: block; }
     .setup-chart-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .setup-card:focus, :focus-visible { outline: 2px solid #326b60; outline-offset: 2px; }
-    .candidate-charts { display: grid; align-items: start; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .candidate-charts { display: grid; align-items: stretch; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .candidate-charts > section { display: flex; flex-direction: column; }
+    .candidate-charts .chart-plot { flex: 1; min-height: 220px; }
+    .candidate-charts .chart-plot canvas { height: 100%; min-height: 220px; }
     .candidate-charts + .cand-grid { margin-top: 12px; }
-    .scatter-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
-    .scatter-controls select { min-height: 40px; max-width: 100%; padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--paper-card); color: var(--ink); font: inherit; }
-    .candidate-charts h3 { margin: 0 0 6px; font-size: .94rem; }
+    .candidate-charts h3 { margin: 0 0 8px; font-size: .94rem; }
+    .cand-card-active { border-color: var(--sage); box-shadow: 0 0 0 2px rgba(47, 116, 102, 0.16); }
     .radar-note, .radar-toolbar { font-size: .85rem; color: var(--ink-muted); }
     .radar-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .radar-dimensions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
@@ -1025,14 +1027,9 @@
           </div>
           <div class="candidate-charts">
             <section class="ed-soft">
-              <h3>候补主题动量四象限</h3>
-              <div class="scatter-controls">
-                <label for="rotationSymbol">查看主题</label>
-                <select id="rotationSymbol"></select>
-              </div>
-              <p class="section-note">横轴看 20 日，纵轴看 5 日。零线区分涨跌。</p>
+              <h3>动量四象限（20日 vs 5日涨跌幅）</h3>
               <div class="chart-box chart-plot">
-                <canvas id="candQuadChart" role="img" aria-label="候补主题 20 日与 5 日收益散点图"></canvas>
+                <canvas id="candQuadChart" role="img" aria-label="动量四象限：20日与5日涨跌幅分布"></canvas>
               </div>
             </section>
             <section class="ed-soft">
@@ -1491,6 +1488,117 @@
           if (canvas.title !== title) canvas.title = title;
         };
         canvas.onpointerdown = selection ? null : event => readPoint(nearest(event).point);
+        canvas.onclick = onPick ? event => {
+          const {point} = nearest(event);
+          if (point) onPick(point);
+        } : null;
+      }
+
+      function drawQuadrantChart(id, points, onPick) {
+        const frame = canvasFrame(id);
+        if (!frame) return;
+        const {ctx, width, height, canvas} = frame;
+        if (!points.length) {
+          canvas.onpointermove = canvas.onpointerdown = canvas.onclick = null;
+          canvas.removeAttribute("title");
+          chartEmpty(frame);
+          return;
+        }
+        const left = 24, right = width - 24, top = 16, bottom = height - 34;
+        const xs = points.map(p => p.x);
+        const ys = points.map(p => p.y);
+        const minRawX = Math.min(0, ...xs), maxRawX = Math.max(0, ...xs);
+        const minRawY = Math.min(0, ...ys), maxRawY = Math.max(0, ...ys);
+        const maxAbsX = Math.max(5, Math.abs(minRawX), Math.abs(maxRawX));
+        const maxAbsY = Math.max(3, Math.abs(minRawY), Math.abs(maxRawY));
+        const xMin = Math.min(minRawX - maxAbsX * 0.16, -maxAbsX * 0.42);
+        const xMax = Math.max(maxRawX + maxAbsX * 0.26, maxAbsX * 0.42);
+        const yMin = Math.min(minRawY - maxAbsY * 0.22, -maxAbsY * 0.42);
+        const yMax = Math.max(maxRawY + maxAbsY * 0.24, maxAbsY * 0.42);
+        const mapX = v => left + (v - xMin) * (right - left) / (xMax - xMin);
+        const mapY = v => bottom - (v - yMin) * (bottom - top) / (yMax - yMin);
+
+        // Minimalist dashed zero crosshairs
+        ctx.save();
+        ctx.strokeStyle = "#cfd6d0";
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash([4, 4]);
+        chartSegment(ctx, left, mapY(0), right, mapY(0));
+        chartSegment(ctx, mapX(0), top, mapX(0), bottom);
+        ctx.restore();
+
+        // Centered bottom X-axis caption
+        ctx.fillStyle = "#5c6e6a";
+        ctx.font = '12px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText("20日涨跌幅 (%)", (left + right) / 2, height - 8);
+
+        const r = width < 340 ? 7 : 8;
+        const coords = points.map(p => ({...p, px: mapX(p.x), py: mapY(p.y)}));
+
+        // Draw crisp dots with white outer ring
+        for (const pt of coords) {
+          ctx.beginPath();
+          ctx.arc(pt.px, pt.py, r, 0, Math.PI * 2);
+          ctx.fillStyle = pt.color;
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "#ffffff";
+          ctx.stroke();
+        }
+
+        // Collision-free bold labels (avoids both dots and previously placed labels)
+        ctx.font = '700 13px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        ctx.fillStyle = "#182c2a";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        const placed = [];
+        const gap = r + 5;
+        const bh = 14;
+        for (const pt of coords) {
+          const bw = ctx.measureText(pt.label).width;
+          const candidates = [
+            {bx: pt.px + gap, by: pt.py},
+            {bx: pt.px + gap - 1, by: pt.py + 12},
+            {bx: pt.px + gap - 1, by: pt.py - 12},
+            {bx: pt.px - bw / 2, by: pt.py - r - 11},
+            {bx: pt.px - bw / 2, by: pt.py + r + 11},
+            {bx: pt.px - gap - bw, by: pt.py},
+            {bx: pt.px - gap - bw, by: pt.py - 12},
+            {bx: pt.px - gap - bw, by: pt.py + 12},
+          ];
+          let best = candidates[0], bestPenalty = Infinity;
+          for (let i = 0; i < candidates.length; i++) {
+            const c = candidates[i];
+            let penalty = i * 2;
+            if (c.bx < 6 || c.bx + bw > width - 6 || c.by - bh / 2 < 6 || c.by + bh / 2 > bottom + 4) penalty += 1000;
+            for (const other of coords) {
+              const cx = Math.max(c.bx - 2, Math.min(other.px, c.bx + bw + 2));
+              const cy = Math.max(c.by - bh / 2 - 2, Math.min(other.py, c.by + bh / 2 + 2));
+              if (Math.hypot(other.px - cx, other.py - cy) < r + 2.5) penalty += 500;
+            }
+            for (const lb of placed) {
+              if (c.bx < lb.bx + lb.bw + 4 && c.bx + bw + 4 > lb.bx && Math.abs(c.by - lb.by) < bh + 2) penalty += 400;
+            }
+            if (penalty < bestPenalty) {
+              bestPenalty = penalty;
+              best = c;
+            }
+          }
+          placed.push({bx: best.bx, by: best.by, bw});
+          ctx.fillText(pt.label, best.bx, best.by);
+        }
+
+        const nearest = (event) => coords
+          .map(point => ({point, distance: Math.hypot(point.px - event.offsetX, point.py - event.offsetY)}))
+          .reduce((best, hit) => hit.distance < best.distance ? hit : best, {distance: event.pointerType === "touch" ? 28 : 20});
+        canvas.onpointermove = event => {
+          const {point} = nearest(event);
+          canvas.style.cursor = point && onPick ? "pointer" : "";
+          const title = point ? `${point.label} ${point.name || ""} · 20日 ${fmtChg(point.x)} · 5日 ${fmtChg(point.y)}`.trim() : "";
+          if (canvas.title !== title) canvas.title = title;
+        };
         canvas.onclick = onPick ? event => {
           const {point} = nearest(event);
           if (point) onPick(point);
@@ -2039,25 +2147,16 @@
         }));
         const scatter = numeric.filter(point => point.x !== null && point.y !== null);
         const plot = document.getElementById("candQuadChart");
-        let reading = document.getElementById("candQuadReading");
-        if (!reading) {
-          reading = document.createElement("p");
-          reading.id = "candQuadReading";
-          reading.className = "chart-reading";
-          plot.parentElement.after(reading);
-        }
-        reading.hidden = !scatter.length;
-        const selector = document.getElementById("rotationSymbol");
-        const selected = selector.value;
-        selector.innerHTML = scatter.map(point => `<option value="${escapeHtml(point.label)}">${escapeHtml(point.label)} · ${escapeHtml(point.name)}</option>`).join("");
-        if (scatter.some(point => point.label === selected)) selector.value = selected;
-        selector.disabled = !scatter.length;
-        const redraw = () => drawScatter(plot.id, scatter, "20 日收益 (%)", "5 日收益 (%)", point => {
-          selector.value = point.label;
-          redraw();
-        }, reading, true, selector);
-        selector.onchange = redraw;
-        redraw();
+        const staleReading = document.getElementById("candQuadReading");
+        if (staleReading) staleReading.remove();
+        drawQuadrantChart(plot.id, scatter, point => {
+          document.querySelectorAll(".cand-card-active").forEach(el => el.classList.remove("cand-card-active"));
+          const card = document.querySelector(`.cand-card[data-candidate-id="${CSS.escape(point.label)}"]`);
+          if (card) {
+            card.classList.add("cand-card-active");
+            card.scrollIntoView({behavior: "smooth", block: "center"});
+          }
+        });
 
         const limit = Math.max(0.01, ...numeric.flatMap(row => [Math.abs(row.x || 0), Math.abs(row.y || 0)]));
         const bar = (value, period) => {
