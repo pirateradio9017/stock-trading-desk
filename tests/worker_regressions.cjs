@@ -205,7 +205,7 @@ process.on('beforeExit', () => {
   };
   const st1 = await ctx.worker.fetch(new Request('https://test/api/state?t=11111'), stateEnv, {});
   assert.equal(st1.status, 200);
-  assert.equal(st1.headers.get('cache-control'), 'public, max-age=15, s-maxage=30, stale-while-revalidate=120');
+  assert.equal(st1.headers.get('cache-control'), 'no-cache, must-revalidate');
   const stEtag = st1.headers.get('etag');
   assert.ok(stEtag && stEtag.startsWith('W/"state-'));
   assert.equal(stateKvReads, 1);
@@ -245,13 +245,15 @@ process.on('beforeExit', () => {
   assert.equal(st503.headers.get('cache-control'), 'no-store');
   assert.equal(mockCache.store.has('https://test/api/state'), false);
 
-  // 3. `/api/live` SWR via ctx.waitUntil: instant return of slightly stale KV + background refresh
+  // 3. `/api/live` synchronous fresh refresh via 2-batch CNBC (only 4 total subrequests: 2 CNBC + 2 KR Yahoo) + warm MEM-HIT + distinct ?sym= ETag
   ctx.resetWorkerCaches();
   mockCache.store.clear();
-  const staleLive = makeLiveSnapshot(240_000, 100); // 4 minutes old (> fresh window, < 15m SWR window)
+  const staleLive = makeLiveSnapshot(240_000, 100); // 4 minutes old (> fresh window)
   const kvStore = new Map([['live', staleLive]]);
   let kvPutCount = 0;
-  let fetchCount = 0;
+  let totalFetchCount = 0;
+  let cnbcCalls = 0;
+  let yahooCalls = 0;
   const liveEnv = {
     DESK_STATE: {
       get: async (k) => kvStore.get(k) || null,
@@ -263,27 +265,46 @@ process.on('beforeExit', () => {
   };
   ctx.fetch = async (url, opts) => {
     assert.ok(opts && opts.signal, 'Upstream fetch must pass AbortSignal');
-    if (String(url).includes('yahoo.com')) fetchCount++;
-    await new Promise((r) => setTimeout(r, 15));
-    return String(url).includes('yahoo.com') ? makeYahooResponse(555) : { ok: false, status: 404 };
+    totalFetchCount++;
+    const u = String(url);
+    if (u.includes('quote.cnbc.com')) {
+      cnbcCalls++;
+      const symsParam = decodeURIComponent(new URL(u).searchParams.get('symbols') || '');
+      const syms = symsParam.split('|').filter(Boolean);
+      return {
+        ok: true,
+        json: async () => ({
+          FormattedQuoteResult: {
+            FormattedQuote: syms.map((s) => ({
+              symbol: s,
+              code: 0,
+              curmktstatus: 'REG_MKT',
+              last: '555.00',
+              change_pct: '+1.25%',
+              last_time: '2026-11-27T08:00:00.000-0500',
+            })),
+          },
+        }),
+      };
+    }
+    yahooCalls++;
+    await new Promise((r) => setTimeout(r, 10));
+    return makeYahooResponse(555);
   };
   const pendingWaitUntil = [];
   const swrCtx = { waitUntil: (p) => pendingWaitUntil.push(p) };
-  const t0 = Date.now();
-  const swrResp = await ctx.worker.fetch(new Request('https://test/api/live?t=999'), liveEnv, swrCtx);
-  const swrElapsed = Date.now() - t0;
-  assert.equal(swrResp.status, 200);
-  assert.equal(swrResp.headers.get('x-desk-cache'), 'KV-STALE');
-  assert.equal(swrResp.headers.get('cache-control'), 'public, max-age=10, s-maxage=15, stale-while-revalidate=60');
-  const swrJson = await swrResp.json();
-  assert.equal(swrJson.updatedAt, staleLive.updatedAt, 'SWR must return cached data immediately with honest timestamp');
-  assert.ok(swrElapsed < 150, `SWR response should be near-instant, took ${swrElapsed}ms`);
-  assert.ok(pendingWaitUntil.length > 0, 'SWR must schedule background refresh via ctx.waitUntil');
-
-  // Wait for background refresh to complete
+  const freshResp = await ctx.worker.fetch(new Request('https://test/api/live?t=999'), liveEnv, swrCtx);
+  assert.equal(freshResp.status, 200);
+  assert.equal(freshResp.headers.get('x-desk-cache'), 'ORIGIN-FRESH');
+  assert.equal(freshResp.headers.get('cache-control'), 'no-cache, must-revalidate');
+  const freshJson = await freshResp.json();
+  assert.notEqual(freshJson.updatedAt, staleLive.updatedAt, 'Fast CNBC batch refresh must return brand-new data on the first request (zero STALE lag)');
+  assert.equal(freshJson.quotes[0].price, 555);
   await Promise.all(pendingWaitUntil);
-  assert.equal(fetchCount, edgeSymbols.length, 'Background refresh should fetch all LIVE_SYMBOLS once');
-  assert.equal(kvPutCount, 1, 'Background refresh should persist refreshed live quotes to KV');
+  assert.equal(cnbcCalls, 2, 'Live refresh should issue exactly 2 CNBC batch requests');
+  assert.equal(yahooCalls, 2, 'Only the 2 KR stocks not on CNBC should fall back to Yahoo');
+  assert.equal(totalFetchCount, 4, 'Full 52-symbol refresh must stay at 4 subrequests (well under CF 50 limit)');
+  assert.equal(kvPutCount, 1, 'Refresh should persist fresh live quotes to KV');
 
   // Next hit serves fresh quotes from warm cache with 0 additional fetches
   const warmResp = await ctx.worker.fetch(new Request('https://test/api/live'), liveEnv, swrCtx);
@@ -291,7 +312,7 @@ process.on('beforeExit', () => {
   assert.equal(warmResp.headers.get('x-desk-cache'), 'MEM-HIT');
   const warmJson = await warmResp.json();
   assert.equal(warmJson.quotes[0].price, 555);
-  assert.equal(fetchCount, edgeSymbols.length, 'Warm hit must not invoke upstream fetch');
+  assert.equal(totalFetchCount, 4, 'Warm hit must not invoke upstream fetch');
 
   // Filtered ?sym=NVDA gets distinct ETag and shares canonical cache
   const fullEtag = warmResp.headers.get('etag');
@@ -301,16 +322,16 @@ process.on('beforeExit', () => {
   const symJson = await symResp.json();
   assert.equal(symJson.count, 1);
   assert.equal(symJson.quotes[0].sym, 'NVDA');
-  assert.equal(fetchCount, edgeSymbols.length, 'Filtered ?sym= should reuse canonical cache');
+  assert.equal(totalFetchCount, 4, 'Filtered ?sym= should reuse canonical cache');
 
-  // 4. Bounded concurrency + single-flight deduplication on concurrent cold/force refreshes
+  // 4. Bounded concurrency + single-flight deduplication + hard Yahoo fallback cap (< 50 CF subrequests even during total CNBC outage)
   ctx.resetWorkerCaches();
   mockCache.store.clear();
   let active = 0;
   let maxConcurrent = 0;
   let dedupFetches = 0;
   ctx.fetch = async (url) => {
-    if (!String(url).includes('yahoo.com')) return { ok: false, status: 404 };
+    if (!String(url).includes('yahoo.com')) return { ok: false, status: 503 };
     dedupFetches++;
     active++;
     if (active > maxConcurrent) maxConcurrent = active;
@@ -325,8 +346,9 @@ process.on('beforeExit', () => {
   ]);
   assert.ok(concurrentResps.every((r) => r.status === 200));
   const configuredConc = vm.runInContext('WORKER_CONFIG.YAHOO_CONCURRENCY', ctx);
+  const maxFallbackCap = vm.runInContext('WORKER_CONFIG.MAX_YAHOO_FALLBACK_CALLS', ctx);
   assert.ok(maxConcurrent <= configuredConc, `maxConcurrent ${maxConcurrent} exceeded cap ${configuredConc}`);
-  assert.equal(dedupFetches, edgeSymbols.length, '3 concurrent refreshes must deduplicate to 1 single-flight batch');
+  assert.equal(dedupFetches, maxFallbackCap, '3 concurrent refreshes must deduplicate and cap Yahoo fallback safely below CF 50-subrequest limit');
 
   // 5. Upstream hang/timeout -> tight deadline KV fallback with honest original timestamp (never hangs, never fabricates)
   ctx.resetWorkerCaches();
@@ -612,13 +634,31 @@ process.on('beforeExit', () => {
     ['news', { updatedAt: ctx.formatCnTimestamp(new Date(activeNow.getTime() - 30 * 60_000)), count: 1, items: [{ event_id: 'old', title: '美股旧新闻测试条目', summary: 'old', tag: '美股快讯', source: '华尔街见闻', pubDate: '2026-11-25 22:00 UTC+8', link: 'https://example.com/old' }] }],
   ]);
   const dispatchCalls = [];
+  const callOrder = [];
   ctx.fetch = async (url, opts) => {
     const u = String(url);
     if (u.includes('api.github.com')) {
+      callOrder.push('github');
       dispatchCalls.push({ url: u, method: opts.method, body: JSON.parse(opts.body) });
       return { ok: true, status: 204 };
     }
-    if (u.includes('yahoo.com')) return makeYahooResponse(444);
+    if (u.includes('quote.cnbc.com')) {
+      callOrder.push('cnbc');
+      const syms = decodeURIComponent(new URL(u).searchParams.get('symbols') || '').split('|').filter(Boolean);
+      return {
+        ok: true,
+        json: async () => ({
+          FormattedQuoteResult: {
+            FormattedQuote: syms.map((s) => ({ symbol: s, code: 0, curmktstatus: 'REG_MKT', last: '444.00', change_pct: '+0.80%', last_time: '2026-11-25T10:00:00.000-0500' })),
+          },
+        }),
+      };
+    }
+    if (u.includes('yahoo.com')) {
+      callOrder.push('yahoo');
+      return makeYahooResponse(444);
+    }
+    callOrder.push('wscn');
     return {
       ok: true,
       json: async () => ({
@@ -640,12 +680,32 @@ process.on('beforeExit', () => {
     { waitUntil: (p) => schedBg.push(p) }
   );
   await Promise.all(schedBg);
+  assert.equal(callOrder[0], 'github', 'Scheduled maintenance must dispatch GitHub workflow FIRST before quote/news fetches');
+  assert.ok(callOrder.length <= 10, `Scheduled maintenance must stay far under CF 50-subrequest limit (got ${callOrder.length})`);
   assert.equal(schedResult.refreshedLive, true);
   assert.equal(schedResult.refreshedNews, true);
   assert.equal(schedResult.dispatch.dispatched, true);
   assert.equal(dispatchCalls.length, 1);
   assert.equal(dispatchCalls[0].body.inputs.deploy_worker, 'false');
   assert.equal(schedKv.get('dispatch_meta').lastStatus, 'dispatched');
+
+  // Failed GitHub dispatch must NOT stamp lastDispatchedAt cooldown, allowing immediate retry on next tick
+  const failKv = new Map([['state', staleActiveState]]);
+  const failEnv = {
+    GH_DISPATCH_TOKEN: 'test-token-only',
+    DESK_STATE: {
+      get: async (k) => failKv.get(k) || null,
+      put: async (k, v) => failKv.set(k, JSON.parse(v)),
+    },
+  };
+  ctx.fetch = async () => ({ ok: false, status: 502 });
+  const failRes = await ctx.maybeDispatchResearchWorkflow(failEnv, {}, activeNow);
+  assert.equal(failRes.dispatched, false);
+  const failMeta = failKv.get('dispatch_meta');
+  assert.equal(failMeta.lastDispatchedAt, null, 'Failed dispatch must never poison cooldown with lastDispatchedAt');
+  assert.ok(failMeta.lastErrorAt, 'Failed dispatch should record lastErrorAt for observability');
+  const nextTickDecision = ctx.evaluateResearchDispatch(staleActiveState, failMeta, new Date(activeNow.getTime() + 5 * 60_000));
+  assert.equal(nextTickDecision.shouldDispatch, true, 'Next 5-min cron tick must retry immediately after failed dispatch');
 
   // Edge Nasdaq premarket parser (EST & EDT) and session_rotation aggregation
   const estParsed = ctx.parseNasdaqEtTimestamp('Nov 27, 2026 6:31 AM ET');

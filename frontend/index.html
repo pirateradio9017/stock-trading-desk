@@ -1836,6 +1836,9 @@
       /* Networking & Boot Cache */
       const CACHE_KEY = "desk-boot-cache-v2";
       const inFlight = { state: null, live: null, news: null };
+      const inFlightStarted = { state: 0, live: 0, news: 0 };
+      const lastOkAt = { state: 0, live: 0, news: 0 };
+      const staleRetryTimer = { state: null, live: null };
       const reqVer = { state: 0, live: 0, news: 0 };
 
       function loadCache() {
@@ -1853,23 +1856,40 @@
         } catch (_) {}
       }
 
-      async function fetchJson(key, path, force = false, timeoutMs = 8500) {
-        if (!force && inFlight[key]) return { skip: true };
-        if (force && inFlight[key]) try { inFlight[key].abort(); } catch (_) {}
+      async function fetchJson(key, path, force = false, timeoutMs = 9500) {
+        const now = Date.now();
+        if (inFlight[key]) {
+          const stuck = now - (inFlightStarted[key] || 0) > 12000;
+          if (!force && !stuck) return { skip: true };
+          try { inFlight[key].abort(); } catch (_) {}
+          inFlight[key] = null;
+        }
         const ver = ++reqVer[key];
         const ctrl = new AbortController();
         inFlight[key] = ctrl;
+        inFlightStarted[key] = now;
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         try {
           const sep = path.includes("?") ? "&" : "?";
-          const resp = await fetch(force ? `${path}${sep}force=1` : path, { cache: force ? "no-store" : "default", signal: ctrl.signal });
+          const url = force ? `${path}${sep}force=1` : path;
+          // Always bypass browser HTTP cache so mobile Safari/WeChat/Chrome never freeze on stale snapshots.
+          const resp = await fetch(url, { cache: "no-store", signal: ctrl.signal });
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const cacheStatus = resp.headers.get("X-Desk-Cache") || "";
           const data = await resp.json();
-          return ver === reqVer[key] ? { data } : { skip: true };
+          return ver === reqVer[key] ? { data, cacheStatus } : { skip: true };
         } finally {
           clearTimeout(timer);
-          if (inFlight[key] === ctrl) inFlight[key] = null;
+          if (inFlight[key] === ctrl) { inFlight[key] = null; inFlightStarted[key] = 0; }
         }
+      }
+
+      function scheduleStaleFollowup(key, fn) {
+        if (staleRetryTimer[key]) return;
+        staleRetryTimer[key] = setTimeout(() => {
+          staleRetryTimer[key] = null;
+          if (!document.hidden) fn(false);
+        }, 3500);
       }
 
       async function fetchState(force = false) {
@@ -1879,7 +1899,9 @@
           if (r.skip) return;
           if (!r.data?.meta || !Array.isArray(r.data.mainlines)) throw new Error("数据格式异常");
           STORE.state = r.data; STORE.stateSource = "network"; STORE.stateErr = "";
+          lastOkAt.state = Date.now();
           saveCache(); applyState();
+          if (/STALE|FALLBACK/i.test(r.cacheStatus || "")) scheduleStaleFollowup("state", fetchState);
         } catch (e) {
           STORE.stateErr = `研究同步失败 (${e.message || "超时"})`;
           if (!STORE.state) renderHero();
@@ -1889,12 +1911,14 @@
       async function fetchLive(force = false) {
         STORE.liveBusy = true; updateSyncPill();
         try {
-          const r = await fetchJson("live", "/api/live", force, force ? 10000 : 8500);
+          const r = await fetchJson("live", "/api/live", force, force ? 11000 : 9500);
           if (r.skip) return;
           if (!Array.isArray(r.data?.quotes)) throw new Error("行情格式异常");
           STORE.live = r.data; STORE.liveSource = "network"; STORE.liveErr = "";
+          lastOkAt.live = Date.now();
           saveCache(); renderQuoteRibbon();
           if (STORE.state) { patchHeroKpis(); patchMainlinesLive(); patchSetupsLive(); renderSessionRotation(); patchCandidatesLive(); }
+          if (/STALE|FALLBACK/i.test(r.cacheStatus || "")) scheduleStaleFollowup("live", fetchLive);
         } catch (e) {
           STORE.liveErr = "行情同步失败";
           renderQuoteRibbon();
@@ -1906,7 +1930,7 @@
         try {
           const r = await fetchJson("news", "/api/news?limit=25", force);
           if (r.skip) return;
-          if (Array.isArray(r.data?.items)) { STORE.news = r.data; STORE.newsErr = ""; saveCache(); }
+          if (Array.isArray(r.data?.items)) { STORE.news = r.data; STORE.newsErr = ""; lastOkAt.news = Date.now(); saveCache(); }
         } catch (e) {
           STORE.newsErr = "快讯同步失败";
         } finally { STORE.newsBusy = false; renderNews(); }
@@ -2010,17 +2034,29 @@
       updateSyncPill();
       refreshAll(false);
 
-      setInterval(() => {
+      function watchdogTick() {
         if (document.hidden) return;
-        fetchLive(false);
-      }, 30000);
-      setInterval(() => {
+        const now = Date.now();
+        if (now - lastOkAt.live >= 25000) fetchLive(false);
+        if (now - lastOkAt.state >= 45000) fetchState(false);
+        if (STORE.activeTab === "news" && now - lastOkAt.news >= 60000) fetchNews(false);
+      }
+      setInterval(watchdogTick, 10000);
+
+      let lastResumeAt = 0;
+      function onResume() {
         if (document.hidden) return;
-        fetchState(false);
-      }, 60000);
-      document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) refreshAll(false);
-      });
+        const now = Date.now();
+        if (now - lastResumeAt < 3000) return;
+        lastResumeAt = now;
+        if (now - lastOkAt.live >= 15000) fetchLive(false);
+        if (now - lastOkAt.state >= 30000) fetchState(false);
+        if (STORE.activeTab === "news" && now - lastOkAt.news >= 45000) fetchNews(false);
+      }
+      document.addEventListener("visibilitychange", onResume);
+      window.addEventListener("pageshow", onResume);
+      window.addEventListener("focus", onResume);
+      window.addEventListener("online", () => refreshAll(false));
     })();
   </script>
 </body>

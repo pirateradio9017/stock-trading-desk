@@ -1,28 +1,30 @@
 import INDEX_HTML from "./spa_html.js";
 
 const APP_VERSION = "2.0.0";
-const CACHE_TTL_MS = 120_000;
+const CACHE_TTL_MS = 90_000;
 
 const WORKER_CONFIG = {
   YAHOO_TIMEOUT_MS: 3500,
   WSCN_TIMEOUT_MS: 4000,
   YAHOO_CONCURRENCY: 8,
-  LIVE_REFRESH_BUDGET_MS: 8500,
-  LIVE_CRON_BUDGET_MS: 20_000,
-  LIVE_FRESH_ACTIVE_MS: 30_000,
+  MAX_YAHOO_FALLBACK_CALLS: 38,
+  MAX_YAHOO_CRON_FALLBACK_CALLS: 32,
+  LIVE_REFRESH_BUDGET_MS: 6500,
+  LIVE_CRON_BUDGET_MS: 16_000,
+  LIVE_FRESH_ACTIVE_MS: 25_000,
   LIVE_FRESH_IDLE_MS: CACHE_TTL_MS,
   LIVE_SWR_MAX_AGE_MS: 15 * 60_000,
-  LIVE_STALE_WAIT_MS: 2500,
+  LIVE_STALE_WAIT_MS: 3500,
   LIVE_FORCE_WAIT_MS: 4500,
-  LIVE_EDGE_MAX_SEC: 60,
+  LIVE_EDGE_MAX_SEC: 45,
   NEWS_FRESH_MS: 60_000,
   NEWS_SWR_MAX_AGE_MS: 15 * 60_000,
   NEWS_STALE_WAIT_MS: 2500,
   NEWS_FORCE_WAIT_MS: 4500,
-  NEWS_EDGE_MAX_SEC: 180,
-  STATE_FRESH_MS: 15_000,
-  STATE_EDGE_MAX_SEC: 30,
-  FALLBACK_COOLDOWN_SEC: 15,
+  NEWS_EDGE_MAX_SEC: 120,
+  STATE_FRESH_MS: 10_000,
+  STATE_EDGE_MAX_SEC: 20,
+  FALLBACK_COOLDOWN_SEC: 10,
   CRON_LIVE_ACTIVE_MS: 4 * 60_000,
   CRON_LIVE_IDLE_MS: 10 * 60_000,
   CRON_NEWS_ACTIVE_MS: 5 * 60_000,
@@ -35,11 +37,11 @@ const WORKER_CONFIG = {
   GITHUB_REPO: "pirateradio9017/stock-trading-desk",
   GITHUB_WORKFLOW: "pipeline.yml",
   GITHUB_REF: "main",
-  CNBC_TIMEOUT_MS: 4500,
+  CNBC_TIMEOUT_MS: 3500,
   NASDAQ_TIMEOUT_MS: 4500,
   NASDAQ_BUDGET_MS: 8000,
   NASDAQ_CONCURRENCY: 6,
-  SESSION_ROTATION_FRESH_MS: 30_000,
+  SESSION_ROTATION_FRESH_MS: 25_000,
 };
 
 const ROTATION_THEMES_EDGE = [
@@ -64,6 +66,37 @@ const CNBC_SESSION_SYMBOLS = Array.from(
     "QQQ", "TLT", "XLP", "SOXX", "SMH", "AAPL", "LMT", "HYG", "LQD", "GLD",
   ])
 );
+const CNBC_MACRO_MAP = [
+  ["^GSPC", ".SPX"],
+  ["^IXIC", ".IXIC"],
+  ["^VIX", ".VIX"],
+  ["^MOVE", ".MOVE"],
+  ["^TNX", "US10Y"],
+  ["BTC-USD", "BTC.CM="],
+  ["GC=F", "@GC.1"],
+  ["SI=F", "@SI.1"],
+  ["HG=F", "@HG.1"],
+  ["BZ=F", "@LCO.1"],
+  ["CL=F", "@CL.1"],
+  ["JPY=X", "JPY="],
+  ["DX-Y.NYB", ".DXY"],
+  ["ES=F", "@SP.1"],
+  ["NQ=F", "@ND.1"],
+  ["^N225", ".N225"],
+  ["^KS11", ".KS11"],
+  ["^TWII", ".TWII"],
+  ["^HSI", ".HSI"],
+  ["000001.SS", ".SSEC"],
+  ["2330.TW", "2330-TW"],
+  ["^GDAXI", ".GDAXI"],
+  ["^STOXX50E", ".STOXX50E"],
+  ["ASML.AS", "ASML-NL"],
+];
+const CNBC_TO_CANONICAL = new Map([
+  ...CNBC_SESSION_SYMBOLS.map((s) => [s, s]),
+  ...CNBC_MACRO_MAP.map(([canon, cnbc]) => [cnbc, canon]),
+]);
+const LIVE_NAME_MAP = new Map();
 const MONTHS_EN = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -167,9 +200,9 @@ const SECURITY_HEADERS = {
 };
 
 const CACHE_CONTROL_HTML = "public, max-age=0, must-revalidate";
-const CACHE_CONTROL_STATE = "public, max-age=15, s-maxage=30, stale-while-revalidate=120";
-const CACHE_CONTROL_LIVE = "public, max-age=10, s-maxage=15, stale-while-revalidate=60";
-const CACHE_CONTROL_NEWS = "public, max-age=30, s-maxage=60, stale-while-revalidate=180";
+const CACHE_CONTROL_STATE = "no-cache, must-revalidate";
+const CACHE_CONTROL_LIVE = "no-cache, must-revalidate";
+const CACHE_CONTROL_NEWS = "no-cache, must-revalidate";
 
 const ISOLATE_CACHE = new Map();
 const IN_FLIGHT = new Map();
@@ -790,8 +823,62 @@ function compareEdgeSessionPrints(printsMap, nowDate, session) {
   };
 }
 
-async function fetchCnbcSessionPrints(nowDate, marketSession) {
-  const symbolsParam = encodeURIComponent(CNBC_SESSION_SYMBOLS.join("|"));
+function parseCnbcLiveQuote(item, canonicalSym, displayName, nowIso, isPreMarket) {
+  if (!item || typeof item !== "object" || Number(item.code) !== 0) return null;
+  const pxRaw = String(item.last || "").replace(/[$,%\s]/g, "");
+  if (!pxRaw) return null;
+  const price = Number(pxRaw);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const chgRaw = String(item.change_pct || "").replace(/[%,\s]/g, "");
+  const chgNum = chgRaw ? Number(chgRaw) : NaN;
+  const chg = Number.isFinite(chgNum) ? chgNum : null;
+
+  let ahPrice = null;
+  let ahChg = null;
+  const ext = item.ExtendedMktQuote;
+  if (ext && typeof ext === "object") {
+    const extType = String(ext.type || "").trim().toUpperCase();
+    const extAllowed = isPreMarket ? extType === "PRE_MKT" : (extType === "POST_MKT" || extType === "PRE_MKT");
+    if (extAllowed) {
+      const epRaw = String(ext.last || "").replace(/[$,%\s]/g, "");
+      const ecRaw = String(ext.change_pct || "").replace(/[%,\s]/g, "");
+      const ep = epRaw ? Number(epRaw) : NaN;
+      const ec = ecRaw ? Number(ecRaw) : NaN;
+      if (Number.isFinite(ep) && ep > 0) {
+        ahPrice = ep;
+        ahChg = Number.isFinite(ec) ? ec : ((ep / price - 1) * 100);
+      }
+    }
+  }
+
+  let tsUtc = nowIso;
+  const parsedIso = parseIsoTimestamp(item.last_time);
+  if (parsedIso) {
+    tsUtc = formatUtcIso(parsedIso);
+  } else if (item.last_time_msec && Number.isFinite(Number(item.last_time_msec)) && Number(item.last_time_msec) > 1_000_000_000_000) {
+    tsUtc = formatUtcIso(new Date(Number(item.last_time_msec)));
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(String(item.last_time || "").trim())) {
+    tsUtc = `${String(item.last_time).trim()}T21:00:00Z`;
+  }
+
+  const priceDigits = price < 10 ? 4 : 2;
+  const ahDigits = ahPrice !== null && ahPrice < 10 ? 4 : 2;
+  return {
+    sym: canonicalSym,
+    name: displayName,
+    price: roundOrNull(price, priceDigits),
+    chg: roundOrNull(chg, 2),
+    ahPrice: roundOrNull(ahPrice, ahDigits),
+    ahChg: roundOrNull(ahChg, 2),
+    r5: null,
+    r20: null,
+    source: "cnbc_batch",
+    tsUtc,
+  };
+}
+
+async function fetchCnbcBatchRaw(cnbcSymbols) {
+  const symbolsParam = encodeURIComponent(cnbcSymbols.join("|"));
   const url = `https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=${symbolsParam}&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json&events=1`;
   const payload = await fetchJsonWithTimeout(
     url,
@@ -804,7 +891,11 @@ async function fetchCnbcSessionPrints(nowDate, marketSession) {
     WORKER_CONFIG.CNBC_TIMEOUT_MS
   );
   const rawList = payload?.FormattedQuoteResult?.FormattedQuote;
-  const items = Array.isArray(rawList) ? rawList : rawList ? [rawList] : [];
+  return Array.isArray(rawList) ? rawList : rawList ? [rawList] : [];
+}
+
+async function fetchCnbcSessionPrints(nowDate, marketSession) {
+  const items = await fetchCnbcBatchRaw(CNBC_SESSION_SYMBOLS);
   const prints = new Map();
   const parsedAt = new Date();
   for (const item of items) {
@@ -943,7 +1034,13 @@ function buildPriorityFetchOrder() {
 
 const LIVE_FETCH_ORDER = buildPriorityFetchOrder();
 
-async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = false, budgetMsOverride = null, force = false) {
+for (const [sym, name] of LIVE_SYMBOLS) {
+  LIVE_NAME_MAP.set(sym, name);
+}
+const LIVE_INDEX_BY_SYM = new Map(LIVE_SYMBOLS.map(([sym], idx) => [sym, idx]));
+const CNBC_MACRO_SYMS = CNBC_MACRO_MAP.map(([, cnbc]) => cnbc);
+
+async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = false, budgetMsOverride = null, force = false, maxYahooOverride = null) {
   let cached = cachedSeed || null;
   if (checkKvFirst) {
     const kvLatest = await safeKvJson(env, "live");
@@ -969,45 +1066,86 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     }
   }
 
-  // Run single-request CNBC real-time session rotation + premarket prints in parallel with Yahoo quotes.
-  const edgeRotPromise = isSessionActive
-    ? fetchEdgeSessionRotation(now, marketSession, cached?.session_rotation || null, {
-        force,
-        allowNasdaqFallback: false,
-      }).catch(() => ({ rotation: null, prints: new Map() }))
-    : Promise.resolve({ rotation: null, prints: new Map() });
-
   const budgetMs = Number.isFinite(budgetMsOverride) && budgetMsOverride > 0
     ? budgetMsOverride
     : WORKER_CONFIG.LIVE_REFRESH_BUDGET_MS;
   const deadlineMs = Date.now() + budgetMs;
-  const [fetchedInOrder, edgeRot] = await Promise.all([
-    mapWithConcurrency(
-      LIVE_FETCH_ORDER,
+
+  // Primary: 2 parallel CNBC batch requests cover 50/52 live quotes + all 21 session_rotation tickers in ~500ms (2 subrequests).
+  const [equityItems, macroItems] = await Promise.all([
+    fetchCnbcBatchRaw(CNBC_SESSION_SYMBOLS).catch(() => []),
+    fetchCnbcBatchRaw(CNBC_MACRO_SYMS).catch(() => []),
+  ]);
+
+  const fetched = new Array(LIVE_SYMBOLS.length).fill(null);
+  const edgePrints = new Map();
+  let freshCount = 0;
+  const parsedAt = new Date();
+
+  for (const item of equityItems) {
+    const rawSym = String(item?.symbol || "").trim().toUpperCase();
+    const canon = CNBC_TO_CANONICAL.get(rawSym) || rawSym;
+    const idx = LIVE_INDEX_BY_SYM.get(canon);
+    if (idx !== undefined) {
+      const q = parseCnbcLiveQuote(item, canon, LIVE_NAME_MAP.get(canon) || canon, nowIso, isPreMarket);
+      if (q && q.price !== null) {
+        fetched[idx] = q;
+        freshCount++;
+      }
+    }
+    if (isSessionActive) {
+      const sp = parseCnbcPrint(item, parsedAt, marketSession);
+      if (sp && sp.sym) edgePrints.set(sp.sym, sp);
+    }
+  }
+
+  for (const item of macroItems) {
+    const rawSym = String(item?.symbol || "").trim();
+    const canon = CNBC_TO_CANONICAL.get(rawSym) || CNBC_TO_CANONICAL.get(rawSym.toUpperCase());
+    if (!canon) continue;
+    const idx = LIVE_INDEX_BY_SYM.get(canon);
+    if (idx !== undefined && !fetched[idx]) {
+      const q = parseCnbcLiveQuote(item, canon, LIVE_NAME_MAP.get(canon) || canon, nowIso, isPreMarket);
+      if (q && q.price !== null) {
+        fetched[idx] = q;
+        freshCount++;
+      }
+    }
+  }
+
+  // Fallback: fetch only missing symbols via Yahoo v8 (normally just 2 KR stocks), strictly capped below CF's 50-subrequest limit.
+  const maxYahooCalls = Number.isFinite(maxYahooOverride) && maxYahooOverride >= 0
+    ? maxYahooOverride
+    : WORKER_CONFIG.MAX_YAHOO_FALLBACK_CALLS;
+  const missingOrder = LIVE_FETCH_ORDER.filter((idx) => !fetched[idx]).slice(0, maxYahooCalls);
+  if (missingOrder.length > 0 && Date.now() < deadlineMs) {
+    const yfResults = await mapWithConcurrency(
+      missingOrder,
       WORKER_CONFIG.YAHOO_CONCURRENCY,
       deadlineMs,
       (symIdx) => {
         const [sym, name] = LIVE_SYMBOLS[symIdx];
         return fetchYahooSymbol(sym, name, nowIso, isPreMarket);
       }
-    ),
-    edgeRotPromise,
-  ]);
-  const fetched = new Array(LIVE_SYMBOLS.length).fill(null);
-  let freshCount = 0;
-  for (let i = 0; i < LIVE_FETCH_ORDER.length; i++) {
-    const symIdx = LIVE_FETCH_ORDER[i];
-    const item = fetchedInOrder[i];
-    fetched[symIdx] = item;
-    if (item && item.price !== null) freshCount++;
+    );
+    for (let i = 0; i < missingOrder.length; i++) {
+      const symIdx = missingOrder[i];
+      const item = yfResults[i];
+      if (item && item.price !== null) {
+        fetched[symIdx] = item;
+        freshCount++;
+      }
+    }
   }
 
-  const edgePrints = edgeRot?.prints instanceof Map ? edgeRot.prints : new Map();
-  const hasFreshRotation = Boolean(
-    edgeRot?.rotation &&
-      edgeRot.rotation.sampled_utc &&
-      edgeRot.rotation.sampled_utc !== cached?.session_rotation?.sampled_utc
-  );
+  let builtRotation = null;
+  if (isSessionActive && edgePrints.size > 0) {
+    const cand = compareEdgeSessionPrints(edgePrints, parsedAt, marketSession);
+    if (cand.themes.length >= 2 || !(cached?.session_rotation?.session === marketSession)) {
+      builtRotation = cand;
+    }
+  }
+  const hasFreshRotation = Boolean(builtRotation && builtRotation.sampled_utc);
 
   // Never stamp a fake fresh updatedAt if upstream returned zero live quotes and no fresh session prints.
   if (freshCount === 0 && !hasFreshRotation && edgePrints.size === 0 && cached && Array.isArray(cached.quotes) && cached.quotes.length > 0) {
@@ -1015,7 +1153,9 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
     return cached;
   }
 
-  const reusableRotation = edgeRot?.rotation || (cached?.session_rotation?.session === marketSession ? cached.session_rotation : null);
+  const reusableRotation = isSessionActive
+    ? (builtRotation || (cached?.session_rotation?.session === marketSession ? cached.session_rotation : null))
+    : null;
   const sessionPrints = new Map();
   if (reusableRotation) {
     if (reusableRotation.benchmark?.sym) sessionPrints.set(reusableRotation.benchmark.sym, reusableRotation.benchmark);
@@ -1088,36 +1228,27 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
 async function resolveLive(env, ctx, force, requestUrl) {
   const cacheKey = buildCacheKey(requestUrl, "/api/live");
   const freshMs = getLiveFreshWindowMs();
+  let seed = null;
 
   if (!force) {
     const hit = await getCachedPayload(cacheKey, "live");
     if (hit && isValidLivePayload(hit.data)) {
+      seed = hit.data;
       const age = parseCnTimestampAgeMs(hit.data.updatedAt);
       const withinFresh = age !== null && age >= 0 && age <= freshMs;
-      const withinSwr = age !== null && age >= -5000 && age <= WORKER_CONFIG.LIVE_SWR_MAX_AGE_MS;
       const inCooldown = Boolean(hit.isFallback) && (Date.now() - hit.cachedAt < WORKER_CONFIG.FALLBACK_COOLDOWN_SEC * 1000);
       if (withinFresh) {
         return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-HIT` };
       }
-      if (withinSwr || inCooldown) {
-        if (!inCooldown) {
-          scheduleBackground(
-            ctx,
-            singleFlight("live-refresh", () => fetchAndStoreLive(env, ctx, cacheKey, hit.data, true, null, false))
-          );
-        }
-        return {
-          payload: hit.data,
-          body: hit.body,
-          etag: hit.etag,
-          cacheStatus: inCooldown ? `${hit.layer}-FALLBACK` : `${hit.layer}-STALE`,
-        };
+      if (inCooldown) {
+        return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-FALLBACK` };
       }
     }
   }
 
   const cached = await safeKvJson(env, "live");
   const hasValidKv = isValidLivePayload(cached);
+  const bestSeed = hasValidKv ? cached : seed;
 
   if (!force && hasValidKv) {
     const age = parseCnTimestampAgeMs(cached.updatedAt);
@@ -1125,18 +1256,11 @@ async function resolveLive(env, ctx, force, requestUrl) {
       const entry = await putCachedPayload(cacheKey, "live", cached, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
       return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-HIT" };
     }
-    if (age !== null && age >= -5000 && age <= WORKER_CONFIG.LIVE_SWR_MAX_AGE_MS) {
-      const entry = await putCachedPayload(cacheKey, "live", cached, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
-      scheduleBackground(
-        ctx,
-        singleFlight("live-refresh", () => fetchAndStoreLive(env, ctx, cacheKey, cached, false, null, false))
-      );
-      return { payload: cached, body: entry.body, etag: entry.etag, cacheStatus: "KV-STALE" };
-    }
   }
 
+  // Because 2-batch CNBC + 2 KR Yahoo takes <1s (4 subrequests), await fresh data synchronously within a tight deadline.
   const refreshPromise = singleFlight("live-refresh", () =>
-    fetchAndStoreLive(env, ctx, cacheKey, cached, false, null, force)
+    fetchAndStoreLive(env, ctx, cacheKey, bestSeed, false, null, force)
   );
 
   const reuseMem = (payload) => {
@@ -1144,17 +1268,17 @@ async function resolveLive(env, ctx, force, requestUrl) {
     return mem && mem.data === payload ? { body: mem.body, etag: mem.etag } : {};
   };
 
-  if (hasValidKv) {
+  if (bestSeed) {
     const waitMs = force ? WORKER_CONFIG.LIVE_FORCE_WAIT_MS : WORKER_CONFIG.LIVE_STALE_WAIT_MS;
-    const outcome = await raceWithDeadline(refreshPromise, waitMs, cached);
+    const outcome = await raceWithDeadline(refreshPromise, waitMs, bestSeed);
     if (outcome.timedOut) {
       scheduleBackground(ctx, refreshPromise);
-      return { payload: cached, ...reuseMem(cached), cacheStatus: "KV-FALLBACK" };
+      return { payload: bestSeed, ...reuseMem(bestSeed), cacheStatus: "KV-FALLBACK" };
     }
     return {
       payload: outcome.value,
       ...reuseMem(outcome.value),
-      cacheStatus: outcome.value === cached ? "KV-FALLBACK" : (force ? "FORCE-FRESH" : "ORIGIN-FRESH"),
+      cacheStatus: outcome.value === bestSeed ? "KV-FALLBACK" : (force ? "FORCE-FRESH" : "ORIGIN-FRESH"),
     };
   }
 
@@ -1409,14 +1533,10 @@ async function resolveState(env, ctx, force, requestUrl) {
       if (cacheAge <= WORKER_CONFIG.STATE_FRESH_MS) {
         return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-HIT` };
       }
-      scheduleBackground(
-        ctx,
-        singleFlight("state-refresh", () => fetchAndCacheState(env, ctx, cacheKey))
-      );
-      return { payload: hit.data, body: hit.body, etag: hit.etag, cacheStatus: `${hit.layer}-STALE` };
     }
   }
 
+  // KV read takes ~15ms; fetch synchronously so newly published research lands on the very next poll without STALE lag.
   const entry = force
     ? await fetchAndCacheState(env, ctx, cacheKey)
     : await singleFlight("state-refresh", () => fetchAndCacheState(env, ctx, cacheKey));
@@ -1606,10 +1726,12 @@ async function maybeDispatchResearchWorkflow(env, ctx, now = new Date()) {
     ok = false;
   }
 
+  // Never lock out retry cooldown on a failed dispatch; only stamp lastDispatchedAt when GitHub accepted it.
   const nextMeta = {
-    lastDispatchedAt: nowIso,
+    lastDispatchedAt: ok ? nowIso : (dispatchMeta?.lastDispatchedAt || null),
     lastStatus: ok ? "dispatched" : `error_${statusCode || "network"}`,
     lastHttpStatus: statusCode,
+    lastErrorAt: ok ? null : nowIso,
     reason: decision.reason,
     stateAgeMin: decision.stateAgeMin,
   };
@@ -1622,6 +1744,13 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
   const active = marketSession === "PRE_MARKET" || marketSession === "INTRADAY" || marketSession === "AFTER_HOURS";
   const liveMaxAgeMs = active ? WORKER_CONFIG.CRON_LIVE_ACTIVE_MS : WORKER_CONFIG.CRON_LIVE_IDLE_MS;
   const newsMaxAgeMs = active ? WORKER_CONFIG.CRON_NEWS_ACTIVE_MS : WORKER_CONFIG.CRON_NEWS_IDLE_MS;
+
+  // Step 1: Always run GitHub research auto-dispatch FIRST (1 subrequest) so it can never be starved by quote fetches.
+  const dispatch = await maybeDispatchResearchWorkflow(env, ctx, now).catch((err) => ({
+    dispatched: false,
+    reason: `error:${err?.name || "unknown"}`,
+  }));
+
   const [cachedLive, cachedNews] = await Promise.all([
     safeKvJson(env, "live"),
     safeKvJson(env, "news"),
@@ -1637,7 +1766,16 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
   if (liveAge === null || liveAge < 0 || liveAge >= liveMaxAgeMs) {
     refreshedLive = true;
     tasks.push(
-      fetchAndStoreLive(env, ctx, null, cachedLive, false, WORKER_CONFIG.LIVE_CRON_BUDGET_MS, true)
+      fetchAndStoreLive(
+        env,
+        ctx,
+        null,
+        cachedLive,
+        false,
+        WORKER_CONFIG.LIVE_CRON_BUDGET_MS,
+        true,
+        WORKER_CONFIG.MAX_YAHOO_CRON_FALLBACK_CALLS
+      )
         .then((res) => {
           if (res?.session_rotation?.sampled_utc && res.session_rotation.sampled_utc !== cachedLive?.session_rotation?.sampled_utc) {
             refreshedSessionRotation = true;
@@ -1647,7 +1785,6 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
         .catch(() => null)
     );
   } else if ((marketSession === "PRE_MARKET" || marketSession === "INTRADAY") && isValidLivePayload(cachedLive)) {
-    // When Yahoo quotes are still fresh (<4m), refresh timestamped session rotation (CNBC primary + Nasdaq fallback).
     tasks.push(
       fetchEdgeSessionRotation(now, marketSession, cachedLive.session_rotation || null, {
         force: true,
@@ -1684,14 +1821,8 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
       fetchAndStoreNews(env, ctx, null, cachedNews, false).catch(() => null)
     );
   }
-  const dispatchPromise = maybeDispatchResearchWorkflow(env, ctx, now).catch((err) => ({
-    dispatched: false,
-    reason: `error:${err?.name || "unknown"}`,
-  }));
-  tasks.push(dispatchPromise);
 
   await Promise.allSettled(tasks);
-  const dispatch = await dispatchPromise;
   return { refreshedLive, refreshedNews, refreshedSessionRotation, dispatch };
 }
 
@@ -1774,6 +1905,7 @@ export default {
               stateAgeMinutes = Math.max(0, Math.round((Date.now() - dt.getTime()) / 60_000));
             }
           }
+          const liveAgeMs = live?.updatedAt ? parseCnTimestampAgeMs(live.updatedAt) : null;
           return jsonResponse(
             {
               ok: true,
@@ -1782,11 +1914,16 @@ export default {
               stateUpdatedAt,
               stateAgeMinutes,
               liveUpdatedAt: live ? live.updatedAt || null : null,
+              liveAgeSeconds: liveAgeMs !== null && liveAgeMs >= 0 ? Math.round(liveAgeMs / 1000) : null,
+              rotSampled: live?.session_rotation?.sampled_utc || null,
+              rotThemes: Array.isArray(live?.session_rotation?.themes) ? live.session_rotation.themes.length : 0,
               newsCount: news ? news.count : 0,
               quotesCount: live ? live.count : 0,
               cronDispatchConfigured: Boolean(String(env?.GH_DISPATCH_TOKEN || "").trim()),
               lastDispatchAt: dispatchMeta?.lastDispatchedAt || null,
               lastDispatchStatus: dispatchMeta?.lastStatus || null,
+              lastDispatchReason: dispatchMeta?.reason || null,
+              lastDispatchErrorAt: dispatchMeta?.lastErrorAt || null,
             },
             { status: 200, cacheControl: "no-store", request }
           );
