@@ -9,10 +9,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 from src.config import CORE_SYMBOLS, format_cn_timestamp
-from src.ingestion.fast_live import fetch_fast_live, parse_cnbc_live_quote
+from src.ingestion.fast_live import (
+    CNBC_EQUITY_SYMBOLS, _fetch_nasdaq_batch, _fetch_yahoo_batch, fetch_fast_live, parse_cnbc_live_quote,
+)
 from src.models.schemas import (
     AnalyticsData,
     HistoryEntry,
@@ -119,6 +122,8 @@ def test_fetch_fast_live_merges_cnbc_and_preserves_r5_r20() -> None:
 
     with (
         patch("src.ingestion.fast_live._fetch_cnbc_batch", side_effect=fake_cnbc_batch),
+        patch("src.ingestion.fast_live._fetch_nasdaq_batch", return_value=[]),
+        patch("src.ingestion.fast_live._fetch_yahoo_batch", return_value=[]),
         patch("src.ingestion.fast_live._fetch_yahoo_gap_symbol", side_effect=fake_yahoo_gap),
     ):
         live = asyncio.run(fetch_fast_live(cached=cached, now_utc=now_utc))
@@ -130,6 +135,90 @@ def test_fetch_fast_live_merges_cnbc_and_preserves_r5_r20() -> None:
     assert nvda.r20 == 6.0
     assert live.session_rotation is not None
     assert len(live.session_rotation.themes) >= 2
+
+
+def test_nasdaq_watchlist_at_open_and_http_limit() -> None:
+    now = datetime(2026, 11, 30, 14, 30, 15, tzinfo=timezone.utc)
+    sizes = []
+    def respond(request):
+        symbols = [s.split("|")[0] for s in request.url.params.get_list("symbol")]
+        sizes.append(len(symbols))
+        return httpx.Response(200, json={"data": [
+            {"symbol": sym, "marketStatus": "Market Open", "lastSalePrice": "$152.54",
+             "percentageChange": "+1.20%", "lastTradeTimestampDateTime":
+                 {"SPY": "2026-11-27T00:00:00", "NVDA": "2026-11-30T16:30:00Z"}
+                 .get(sym, "2026-11-30T09:30:10")}
+            for sym in symbols]})
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await _fetch_nasdaq_batch(client, now, "INTRADAY")
+    prints = asyncio.run(fetch())
+    assert max(sizes) <= 20
+    assert {p.sym for p in prints} == set(CNBC_EQUITY_SYMBOLS) - {"SPY", "NVDA"}
+    assert all(p.trade_utc == "2026-11-30T14:30:10Z" for p in prints)
+
+
+def test_cnbc_date_only_and_invalid_times() -> None:
+    row = {"code": 0, "last": "98", "last_time": "2026-11-27"}
+    def parse(row):
+        return parse_cnbc_live_quote(row, "SPY", "SPY", "2026-11-30T14:30:00Z", is_premarket=False)
+    assert parse(row).tsUtc == "2026-11-27"
+    assert parse({**row, "last_time": "bad"}) is None
+    assert parse({**row, "last_time": "2026-11-30T18:00:00Z"}) is None
+
+
+def test_yahoo_batch_uses_trade_metadata_at_open() -> None:
+    now = datetime(2026, 11, 30, 14, 30, 20, tzinfo=timezone.utc)
+    def respond(request):
+        assert request.url.params["range"] == "1d"
+        rows = [{"response": [{"meta": {
+            "symbol": sym, "regularMarketTime": now.timestamp() + offset,
+            "regularMarketPrice": 102, "previousClose": 100,
+        }, "indicators": {"quote": [{"close": [80]}]}}]} for sym, offset in
+            [("NVDA", -2), ("QQQ", 3600), ("AAPL", -86400)]]
+        return httpx.Response(200, json={"spark": {"result": rows}})
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await _fetch_yahoo_batch(client, list(CORE_SYMBOLS), now)
+    quotes = asyncio.run(fetch())
+    assert [(q.sym, q.price, q.chg, q.tsUtc) for q in quotes] == [
+        ("NVDA", 102, 2, "2026-11-30T14:30:18Z")
+    ]
+
+
+def test_open_uses_newest_trade_and_preserves_cached_newer_price() -> None:
+    from src.models.schemas import SessionPrint
+    now = datetime(2026, 11, 30, 14, 30, 25, tzinfo=timezone.utc)
+    cached = _make_live(now - timedelta(seconds=15), price=101)
+    cnbc = [{"code": 0, "symbol": sym, "last": "100", "change_pct": "+1",
+             "last_time": "2026-11-30T14:30:05Z", "curmktstatus": "REG_MKT"} for sym in CNBC_EQUITY_SYMBOLS]
+    newer = SessionPrint(sym="NVDA", price=103, change=2, trade_utc="2026-11-30T14:30:20Z")
+    with (
+        patch("src.ingestion.fast_live._fetch_cnbc_batch", side_effect=[cnbc, []]),
+        patch("src.ingestion.fast_live._fetch_nasdaq_batch", return_value=[newer]),
+        patch("src.ingestion.fast_live._fetch_yahoo_gap_symbol", return_value=None),
+    ):
+        live = asyncio.run(fetch_fast_live(cached=cached, now_utc=now))
+    quotes = {q.sym: q for q in live.quotes}
+    assert (quotes["NVDA"].price, quotes["NVDA"].source, quotes["NVDA"].r5) == (103, "nasdaq_watchlist", 2.5)
+    assert (quotes["AAPL"].price, quotes["AAPL"].tsUtc) == (101, "2026-11-30T14:30:10Z")
+
+
+def test_old_disk_snapshot_and_failed_refresh_stay_stale(tmp_path, monkeypatch) -> None:
+    reset_server_caches()
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path))
+    old = _make_live(datetime.now(timezone.utc) - timedelta(days=1))
+    path = tmp_path / "live.json"
+    path.write_text(old.model_dump_json(), encoding="utf-8")
+    mtime = path.stat().st_mtime_ns
+    async def offline(cached):
+        return cached
+    with patch("src.server._fetch_live_upstream", side_effect=offline) as refresh:
+        response = TestClient(app).get("/api/live")
+    assert response.headers["X-Desk-Cache"] == "MEM-FALLBACK"
+    assert response.json()["updatedAt"] == old.updatedAt
+    assert path.stat().st_mtime_ns == mtime
+    assert refresh.await_count == 1
 
 
 def test_scheduler_decision_windows_and_failure_backoff() -> None:

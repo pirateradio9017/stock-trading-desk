@@ -54,7 +54,7 @@ class ServerHealthResponse(HealthResponse):
 
 FRONTEND_PATH = PROJECT_ROOT / "frontend" / "index.html"
 CACHE_TTL_SEC = 25.0
-LIVE_CACHE_TTL_ACTIVE_SEC = 25.0
+LIVE_CACHE_TTL_ACTIVE_SEC = 8.0
 LIVE_CACHE_TTL_IDLE_SEC = 90.0
 NEWS_CACHE_TTL_SEC = 60.0
 
@@ -267,18 +267,10 @@ def _live_cache_ttl_sec() -> float:
     )
 
 
-def _live_entry_fresh(entry: _HotEntry, path: Path, ttl_sec: float) -> bool:
-    # Check both in-memory refresh age and serialized payload timestamp age.
-    mem_age = time.monotonic() - entry.updated_mono
-    if entry.file_sig is None:
-        return mem_age <= ttl_sec
-    disk_age = _file_age_seconds(path)
+def _live_entry_fresh(entry: _HotEntry, ttl_sec: float) -> bool:
+    # Reloading an old file must not start a new freshness window.
     ts_utc = parse_cn_timestamp_utc(getattr(entry.model, "updatedAt", None))
-    if ts_utc is not None:
-        ts_age = (datetime.now(timezone.utc) - ts_utc).total_seconds()
-        if 0 <= ts_age <= ttl_sec:
-            return True
-    return min(mem_age, disk_age) <= ttl_sec
+    return ts_utc is not None and 0 <= (datetime.now(timezone.utc) - ts_utc).total_seconds() <= ttl_sec
 
 
 def _news_entry_fresh(entry: _HotEntry, path: Path, ttl_sec: float) -> bool:
@@ -289,10 +281,12 @@ def _news_entry_fresh(entry: _HotEntry, path: Path, ttl_sec: float) -> bool:
 
 
 async def _fetch_live_upstream(cached: LiveResponse | None) -> LiveResponse:
-    """Fast 2-batch CNBC + gap Yahoo live fetch with full snapshot fallback."""
+    """Refresh quotes within the live budget. Reserve the full fetch for a cold start."""
     try:
         return await fetch_fast_live(cached=cached)
     except Exception as fast_exc:
+        if cached is not None and cached.quotes:
+            return cached
         logger.warning("Fast live fetch degraded (%s); falling back to snapshot fetcher", fast_exc)
         snap = await fetch_market_snapshot(include_screener=False)
         return snap.live
@@ -313,9 +307,10 @@ async def _get_or_refresh_live(
         LiveResponse,
         allow_mem_newer_than_disk=True,
     )
-    if not force and entry is not None and _live_entry_fresh(entry, live_path, ttl_sec):
+    if not force and entry is not None and _live_entry_fresh(entry, ttl_sec):
         return entry, hit_layer
 
+    observed = entry
     async with _live_lock:
         entry, hit_layer = _get_hot_or_disk(
             "live",
@@ -323,11 +318,13 @@ async def _get_or_refresh_live(
             LiveResponse,
             allow_mem_newer_than_disk=True,
         )
-        if not force and entry is not None and _live_entry_fresh(entry, live_path, ttl_sec):
+        if entry is not None and (not force or entry is not observed) and _live_entry_fresh(entry, ttl_sec):
             return entry, hit_layer
         cached_model: LiveResponse | None = entry.model if entry is not None else None
         try:
             fresh_live = await _fetch_live_upstream(cached_model)
+            if entry is not None and fresh_live is cached_model:
+                return entry, "MEM-FALLBACK"
             sig = entry.file_sig if entry is not None else _file_sig(live_path)
             if persist_disk:
                 atomic_write_json(live_path, fresh_live)

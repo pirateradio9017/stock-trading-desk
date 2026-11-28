@@ -1,11 +1,11 @@
-"""Fast 2-batch CNBC live quote + gap-only Yahoo v8 fetcher for always-on VPS server."""
+"""Time-ranked regular-session quotes for the always-on VPS."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote as url_quote
 
@@ -21,6 +21,7 @@ from src.config import (
     SYMBOL_NAME_MAP,
     SYMBOL_SPEC_MAP,
     SymbolSpec,
+    TZ_ET,
     format_cn_timestamp,
     format_et_short,
     format_utc_iso,
@@ -93,6 +94,60 @@ def _ordered_live_specs() -> list[SymbolSpec]:
 LIVE_SPECS: tuple[SymbolSpec, ...] = tuple(_ordered_live_specs())
 
 
+def _nasdaq_print(row: dict, now: datetime) -> SessionPrint | None:
+    sym = row.get("symbol")
+    if sym not in CNBC_EQUITY_SYMBOLS or str(row.get("marketStatus")).lower() not in {"open", "market open"}:
+        return None
+    price = _clean_float(row.get("lastSalePrice"))
+    change = _clean_float(row.get("percentageChange"))
+    if price is None or price <= 0 or change is None:
+        return None
+    raw = str(row.get("lastTradeTimestampDateTime") or "")
+    stamp = _parse_iso_ts(raw)
+    if stamp is None:
+        # Nasdaq displays ET in its human-readable trade time. A date alone is a close.
+        display = str(row.get("lastTradeTimestamp") or "").strip()
+        for fmt in ("%b %d, %Y %I:%M:%S %p ET", "%b %d, %Y %I:%M %p ET"):
+            try:
+                stamp = datetime.strptime(display, fmt).replace(tzinfo=TZ_ET)
+                break
+            except ValueError:
+                continue
+        if stamp is None and "T" in raw:
+            try:
+                stamp = datetime.fromisoformat(raw).replace(tzinfo=TZ_ET)
+            except ValueError:
+                return None
+    if (stamp is None or get_market_session(stamp) != "INTRADAY"
+            or not -timedelta(seconds=30) <= now - stamp <= timedelta(minutes=20)):
+        return None
+    return SessionPrint(sym=sym, price=_round_px(price), change=round(change, 2), trade_utc=format_utc_iso(stamp))
+
+
+async def _fetch_nasdaq_batch(client: httpx.AsyncClient, now: datetime, session: str) -> list[SessionPrint]:
+    if session != "INTRADAY":
+        return []
+    params = [
+        ("symbol", f"{sym}|{'etf' if 'etf' in SYMBOL_SPEC_MAP[sym].category else 'stocks'}")
+        for sym in CNBC_EQUITY_SYMBOLS
+    ]
+    async def fetch_group(group: list[tuple[str, str]]) -> list[SessionPrint]:
+        try:
+            resp = await client.get("https://api.nasdaq.com/api/quote/watchlist", params=group,
+                                    headers={"Accept": "application/json"}, timeout=3.0)
+            resp.raise_for_status()
+            rows = resp.json().get("data")
+            if isinstance(rows, list):
+                return [p for row in rows if isinstance(row, dict) and (p := _nasdaq_print(row, now))]
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            logger.debug("Nasdaq watchlist unavailable: %s", exc)
+        return []
+
+    # The watchlist endpoint silently drops symbols beyond the first twenty.
+    groups = await asyncio.gather(*(fetch_group(params[i:i + 20]) for i in range(0, len(params), 20)))
+    return [p for group in groups for p in group]
+
+
 def _clean_float(raw: Any) -> float | None:
     if raw is None or isinstance(raw, bool):
         return None
@@ -147,21 +202,27 @@ def parse_cnbc_live_quote(
                 ah_price = ep
                 ah_chg = ec if ec is not None else ((ep / price) - 1.0) * 100.0
 
-    ts_utc = now_iso
     parsed_iso = _parse_iso_ts(item.get("last_time"))
-    if parsed_iso is not None:
-        ts_utc = format_utc_iso(parsed_iso)
-    elif item.get("last_time_msec"):
+    if parsed_iso is None and item.get("last_time_msec"):
         try:
             ms = float(item["last_time_msec"])
             if math.isfinite(ms) and ms > 1_000_000_000_000:
-                ts_utc = format_utc_iso(datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc))
-        except (TypeError, ValueError):
+                parsed_iso = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
             pass
+    now = datetime.fromisoformat(now_iso)
+    if parsed_iso is not None:
+        if parsed_iso > now + timedelta(seconds=30):
+            return None
+        ts_utc = format_utc_iso(parsed_iso)
     else:
-        raw_lt = str(item.get("last_time") or "").strip()
-        if len(raw_lt) == 10 and raw_lt[4] == "-" and raw_lt[7] == "-":
-            ts_utc = f"{raw_lt}T21:00:00Z"
+        try:
+            day = date.fromisoformat(str(item.get("last_time") or ""))
+        except ValueError:
+            return None
+        if day > now.date():
+            return None
+        ts_utc = day.isoformat()
 
     return QuoteItem(
         sym=canonical_sym,
@@ -215,6 +276,47 @@ async def _fetch_cnbc_batch(
         return []
 
 
+async def _fetch_yahoo_batch(client: httpx.AsyncClient, specs: list[SymbolSpec], now: datetime) -> list[QuoteItem]:
+    """Get regular-session trades and prior closes in groups when the first feeds lag."""
+    requested = {spec.sym: spec for spec in specs}
+
+    async def group(symbols: list[str]) -> list[QuoteItem]:
+        try:
+            response = await client.get(
+                "https://query2.finance.yahoo.com/v7/finance/spark",
+                params={"symbols": ",".join(symbols), "range": "1d", "interval": "15m"},
+                headers={"User-Agent": HTTP_USER_AGENT},
+                timeout=3.0,
+            )
+            response.raise_for_status()
+            rows = response.json()["spark"]["result"]
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            return []
+        quotes = []
+        for row in rows or []:
+            try:
+                meta = row["response"][0]["meta"]
+                if meta["symbol"] not in symbols:
+                    continue
+                spec = requested[meta["symbol"]]
+                price = _clean_float(meta.get("regularMarketPrice"))
+                previous = _clean_float(meta.get("previousClose") or meta.get("chartPreviousClose"))
+                trade = datetime.fromtimestamp(meta["regularMarketTime"], tz=timezone.utc)
+                if (not price or price <= 0 or not previous or previous <= 0 or trade > now + timedelta(seconds=30)
+                        or trade.date() != now.date() or get_market_session(trade) != "INTRADAY"):
+                    continue
+                quotes.append(QuoteItem(sym=spec.sym, name=spec.name, price=_round_px(price),
+                                        chg=round((price / previous - 1) * 100, 2),
+                                        source="yahoo_spark", tsUtc=format_utc_iso(trade)))
+            except (KeyError, IndexError, TypeError, ValueError, OverflowError, OSError):
+                continue
+        return quotes
+
+    keys = list(requested)
+    batches = await asyncio.gather(*(group(keys[i:i + 20]) for i in range(0, len(keys), 20)))
+    return [q for batch in batches for q in batch]
+
+
 async def _fetch_yahoo_gap_symbol(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
@@ -236,9 +338,15 @@ async def _fetch_yahoo_gap_symbol(
             )
             if resp.status_code >= 400:
                 return None
+            payload = resp.json()
+            meta = payload["chart"]["result"][0]["meta"]
+            stamp = _clean_float(meta.get("regularMarketTime"))
+            if (meta.get("symbol") != spec.sym or stamp is None or stamp <= 0
+                    or stamp > now_utc.timestamp() + 30 or not _clean_float(meta.get("regularMarketPrice"))):
+                return None
             series = _parse_yahoo_chart(
                 spec,
-                resp.json(),
+                payload,
                 market_session=market_session,
                 now_utc=now_utc,
             )
@@ -254,7 +362,7 @@ async def fetch_fast_live(
     now_utc: datetime | None = None,
     timeout_sec: float = 6.0,
 ) -> LiveResponse:
-    """Refresh 52 live quotes + intraday/premarket rotation in ~0.5-1.5s via 2 CNBC batches + gap Yahoo."""
+    """Fetch Nasdaq and CNBC concurrently, then spend the remaining budget on gaps."""
     ts_now = now_utc or datetime.now(timezone.utc)
     if ts_now.tzinfo is None:
         ts_now = ts_now.replace(tzinfo=timezone.utc)
@@ -263,6 +371,13 @@ async def fetch_fast_live(
     market_session = get_market_session(ts_now)
     is_premarket = market_session == "PRE_MARKET"
     is_session_active = market_session in {"PRE_MARKET", "INTRADAY"}
+
+    cached_rotation = cached.session_rotation if cached else None
+    if cached_rotation:
+        stamp = _parse_iso_ts(cached_rotation.sampled_utc)
+        if (cached_rotation.session != market_session or stamp is None or
+                stamp.astimezone(TZ_ET).date() != ts_now.astimezone(TZ_ET).date()):
+            cached_rotation = None
 
     cached_by_sym: dict[str, QuoteItem] = {}
     if cached is not None:
@@ -280,10 +395,19 @@ async def fetch_fast_live(
     fetched_by_sym: dict[str, QuoteItem] = {}
     edge_prints: dict[str, SessionPrint] = {}
 
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_sec
     async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
-        equity_items, macro_items = await asyncio.gather(
-            _fetch_cnbc_batch(client, CNBC_EQUITY_SYMBOLS, timeout_sec=min(4.5, timeout_sec)),
-            _fetch_cnbc_batch(client, CNBC_MACRO_SYMBOLS, timeout_sec=min(4.5, timeout_sec)),
+        async def bounded(coro):
+            try:
+                return await asyncio.wait_for(coro, timeout=max(0, deadline - loop.time()))
+            except TimeoutError:
+                return []
+
+        equity_items, macro_items, nasdaq_prints = await asyncio.gather(
+            bounded(_fetch_cnbc_batch(client, CNBC_EQUITY_SYMBOLS, timeout_sec=min(3.0, timeout_sec))),
+            bounded(_fetch_cnbc_batch(client, CNBC_MACRO_SYMBOLS, timeout_sec=min(3.0, timeout_sec))),
+            bounded(_fetch_nasdaq_batch(client, ts_now, market_session)),
         )
 
         parsed_at = datetime.now(timezone.utc) if now_utc is None else ts_now
@@ -320,37 +444,54 @@ async def fetch_fast_live(
             if q is not None and q.price is not None:
                 fetched_by_sym[canon] = q
 
+        for sp in nasdaq_prints:
+            current = fetched_by_sym.get(sp.sym)
+            if current is None or sp.trade_utc >= current.tsUtc:
+                fetched_by_sym[sp.sym] = QuoteItem(sym=sp.sym, name=SYMBOL_NAME_MAP.get(sp.sym, sp.sym),
+                    price=sp.price, chg=sp.change, source="nasdaq_watchlist", tsUtc=sp.trade_utc)
+            if sp.sym not in edge_prints or sp.trade_utc >= edge_prints[sp.sym].trade_utc:
+                edge_prints[sp.sym] = sp
+
+        stale_before = format_utc_iso(ts_now - timedelta(seconds=30))
+        def accept_yahoo(q: QuoteItem) -> None:
+            current = fetched_by_sym.get(q.sym)
+            if q.price is None or (current is not None and q.tsUtc <= current.tsUtc):
+                return
+            fetched_by_sym[q.sym] = q
+            stamp = _parse_iso_ts(q.tsUtc)
+            if (market_session == "INTRADAY" and q.sym in CNBC_EQUITY_SYMBOLS
+                    and stamp and get_market_session(stamp) == market_session and q.chg is not None
+                    and q.tsUtc >= stale_before):
+                edge_prints[q.sym] = SessionPrint(sym=q.sym, price=q.price, change=q.chg, trade_utc=q.tsUtc)
+
+        lagging = [SYMBOL_SPEC_MAP[s] for s in CNBC_EQUITY_SYMBOLS
+                   if s not in fetched_by_sym or fetched_by_sym[s].tsUtc < stale_before]
+        if market_session == "INTRADAY" and lagging:
+            for q in await bounded(_fetch_yahoo_batch(client, lagging, ts_now)):
+                accept_yahoo(q)
+
         missing_specs = [spec for spec in LIVE_SPECS if spec.sym not in fetched_by_sym]
-        if missing_specs:
+        if missing_specs and loop.time() < deadline:
             sem = asyncio.Semaphore(8)
-            gap_results = await asyncio.gather(
-                *(
-                    _fetch_yahoo_gap_symbol(
-                        client,
-                        sem,
-                        spec,
-                        market_session=market_session,
-                        now_utc=ts_now,
-                        timeout_sec=min(5.0, timeout_sec),
-                    )
-                    for spec in missing_specs
-                )
-            )
-            for spec, q in zip(missing_specs, gap_results):
-                if q is not None and q.price is not None:
-                    fetched_by_sym[spec.sym] = q
+            async def fill_gap(spec: SymbolSpec) -> None:
+                q = await _fetch_yahoo_gap_symbol(client, sem, spec, market_session=market_session,
+                                                 now_utc=ts_now, timeout_sec=min(3.0, timeout_sec))
+                if q is not None:
+                    accept_yahoo(q)
+
+            await bounded(asyncio.gather(*(fill_gap(spec) for spec in missing_specs)))
 
     built_rotation: SessionRotation | None = None
     if is_session_active:
         if edge_prints:
             cand = compare_prints(edge_prints, parsed_at, market_session)
-            if len(cand.themes) >= 2 or not (cached and cached.session_rotation and cached.session_rotation.session == market_session):
+            if len(cand.themes) >= 2 or cached_rotation is None:
                 built_rotation = cand
         if built_rotation is None or len(built_rotation.themes) < 2:
             try:
                 fb_rot, fb_prints = await asyncio.wait_for(
                     fetch_session_snapshot(ts_now, market_session),
-                    timeout=8.0,
+                    timeout=max(0, deadline - loop.time()),
                 )
                 for sym, sp in fb_prints.items():
                     edge_prints.setdefault(sym, sp)
@@ -373,8 +514,8 @@ async def fetch_fast_live(
     if is_session_active:
         if built_rotation is not None:
             reusable_rotation = built_rotation
-        elif cached and cached.session_rotation and cached.session_rotation.session == market_session:
-            reusable_rotation = cached.session_rotation
+        else:
+            reusable_rotation = cached_rotation
 
     session_prints: dict[str, SessionPrint] = {}
     if reusable_rotation is not None:
@@ -398,6 +539,9 @@ async def fetch_fast_live(
     for spec in LIVE_SPECS:
         fresh = fetched_by_sym.get(spec.sym)
         old = cached_by_sym.get(spec.sym)
+        if (market_session == "INTRADAY" and fresh and old and old.price is not None
+                and spec.sym in CNBC_EQUITY_SYMBOLS and fresh.tsUtc < old.tsUtc <= now_iso):
+            fresh = None
         if fresh is not None and fresh.price is not None:
             merged = fresh.model_copy(
                 update={

@@ -80,7 +80,7 @@ class SchedulerConfig:
     """Tuning knobs for the always-on VPS daemon loops."""
 
     enabled: bool = False
-    live_active_sec: float = 20.0
+    live_active_sec: float = 10.0
     live_idle_sec: float = 90.0
     live_persist_sec: float = 60.0
     news_active_sec: float = 60.0
@@ -99,7 +99,7 @@ class SchedulerConfig:
     def from_env(cls) -> SchedulerConfig:
         return cls(
             enabled=_env_bool("DESK_ENABLE_SCHEDULER", False),
-            live_active_sec=_env_float("DESK_LIVE_ACTIVE_SEC", 20.0, minimum=5.0),
+            live_active_sec=_env_float("DESK_LIVE_ACTIVE_SEC", 10.0, minimum=5.0),
             live_idle_sec=_env_float("DESK_LIVE_IDLE_SEC", 90.0, minimum=15.0),
             live_persist_sec=_env_float("DESK_LIVE_PERSIST_SEC", 60.0, minimum=10.0),
             news_active_sec=_env_float("DESK_NEWS_ACTIVE_SEC", 60.0, minimum=20.0),
@@ -330,7 +330,7 @@ class DeskScheduler:
             session = get_market_session()
             active = session in {"PRE_MARKET", "INTRADAY", "AFTER_HOURS"}
             delay = self.config.live_active_sec if active else self.config.live_idle_sec
-            if await self._sleep_or_stop(delay):
+            if await self._sleep_or_stop(max(1, delay - (loop.time() - now_mono))):
                 break
 
     async def _news_loop(self) -> None:

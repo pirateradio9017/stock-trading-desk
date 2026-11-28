@@ -838,7 +838,7 @@
         pill.classList.toggle("cached", Boolean(partial) || STORE.stateSource === "cache");
         const research = STORE.state?.meta?.updated_at_short || "待更新";
         const quotes = STORE.live?.updatedAtEt || "待更新";
-        txt.textContent = `${partial ? "部分同步失败 · " : ""}研究 ${research} · 行情 ${quotes}`;
+        txt.textContent = `${partial ? "部分同步失败 · " : ""}研究 ${research} · 行情采集 ${quotes}`;
 
       }
 
@@ -969,9 +969,17 @@
         const el = document.getElementById("quoteRibbon");
         const timeEl = document.getElementById("quoteRibbonTime");
         timeEl.textContent = STORE.live
-          ? `${sessionCn(STORE.live.marketSession)} · 实时行情已更新`
+          ? sessionCn(STORE.live.marketSession)
           : (STORE.liveBusy ? "同步中..." : "等待行情");
         const qm = quoteMap();
+        if (STORE.live?.marketSession === "INTRADAY") {
+          const stamp = qm.SPY?.price != null ? (qm.SPY.tsUtc || "") : "";
+          const age = stamp.includes("T") ? Math.floor((Date.now() - Date.parse(stamp)) / 1000) : NaN;
+          const asOf = Number.isFinite(age) && age >= -30
+            ? (age < 60 ? `${Math.max(0, age)} 秒前` : `${Math.floor(age / 60)} 分钟前`)
+            : "时间待确认";
+          timeEl.textContent += ` · SPY 最近成交 ${asOf}`;
+        }
         const syms = [...new Set([
           "NQ=F", "ES=F", "NVDA", "TSM", "AVGO", "ASML", "LITE", "BTC-USD", "GC=F", "BZ=F",
           ...(STORE.state?.mainlines || []).map(m => m.anchor_sym), "TLT", "XLE", "ITB", "LMT"
@@ -987,7 +995,11 @@
           const lbl = isRaw ? (ASSET_CN[sym] || q.name || sym) : sym;
           const sub = !isRaw && ASSET_CN[sym] ? `<span class="muted" style="font-size:11px;">${esc(ASSET_CN[sym])}</span>` : "";
           const preBadge = eff.isPre ? `<span class="pre-tag">盘前</span>` : "";
-          return `<div class="ticker-item"><strong>${esc(lbl)}</strong>${sub}${preBadge}<span class="px">${esc(fmtPrice(sym, eff.price))}</span><span class="pct ${chgCls(eff.chg)}">${esc(fmtChg(eff.chg))}</span></div>`;
+          const age = Date.now() - Date.parse(q.tsUtc);
+          const oldTrade = STORE.live?.marketSession === "INTRADAY" && !isRaw && age >= 90000;
+          const tradeLabel = oldTrade ? '<span class="pre-tag">旧成交</span>' : "";
+          const detail = q.tsUtc ? `常规报价时间 ${q.tsUtc} · ${q.source}` : "";
+          return `<div class="ticker-item" title="${esc(detail)}"><strong>${esc(lbl)}</strong>${sub}${preBadge}${tradeLabel}<span class="px">${esc(fmtPrice(sym, eff.price))}</span><span class="pct ${chgCls(eff.chg)}">${esc(fmtChg(eff.chg))}</span></div>`;
         }).join("");
       }
 
@@ -2037,11 +2049,12 @@
       function watchdogTick() {
         if (document.hidden) return;
         const now = Date.now();
-        if (now - lastOkAt.live >= 25000) fetchLive(false);
+        const liveInterval = ["INTRADAY", "PRE_MARKET"].includes(STORE.live?.marketSession) ? 8000 : 25000;
+        if (now - lastOkAt.live >= liveInterval) fetchLive(false);
         if (now - lastOkAt.state >= 45000) fetchState(false);
         if (STORE.activeTab === "news" && now - lastOkAt.news >= 60000) fetchNews(false);
       }
-      setInterval(watchdogTick, 10000);
+      setInterval(watchdogTick, 2500);
 
       let lastResumeAt = 0;
       function onResume() {
