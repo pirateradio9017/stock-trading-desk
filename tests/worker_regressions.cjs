@@ -767,8 +767,75 @@ process.on('beforeExit', () => {
   assert.equal(cnbcRegSpy.price, 731.2);
   assert.equal(cnbcRegSpy.change, 2.02);
 
+  // 11. KV write throttling protects free 1,000 writes/day cap during frequent live refreshes
+  ctx.resetWorkerCaches();
+  mockCache.store.clear();
+  const recentLive = makeLiveSnapshot(45_000, 150); // 45s old: stale for display (>25s), but < 210s KV write throttle
+  let throttledKvPuts = 0;
+  const throttleEnv = {
+    DESK_STATE: {
+      get: async (k) => (k === 'live' ? recentLive : null),
+      put: async () => { throttledKvPuts++; },
+    },
+  };
+  ctx.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('quote.cnbc.com')) {
+      const syms = decodeURIComponent(new URL(u).searchParams.get('symbols') || '').split('|').filter(Boolean);
+      return {
+        ok: true,
+        json: async () => ({
+          FormattedQuoteResult: {
+            FormattedQuote: syms.map((s) => ({ symbol: s, code: 0, curmktstatus: 'REG_MKT', last: '600.00', change_pct: '+0.50%', last_time: '2026-11-27T10:00:00.000-0500' })),
+          },
+        }),
+      };
+    }
+    return makeYahooResponse(600);
+  };
+  const throttleBg = [];
+  const throttleRes = await ctx.worker.fetch(
+    new Request('https://test/api/live?force=1'),
+    throttleEnv,
+    { waitUntil: (p) => throttleBg.push(p) }
+  );
+  await Promise.all(throttleBg);
+  assert.equal(throttleRes.status, 200);
+  assert.equal((await throttleRes.json()).quotes[0].price, 600);
+  assert.equal(throttledKvPuts, 0, 'Recent live KV (<210s) must skip redundant KV write while serving fresh RAM quote');
+
+  // 12. VPS origin proxy mode: zero KV reads/writes, transparent header forwarding, and cron short-circuit
+  let proxyKvOps = 0;
+  let proxySeenTarget = '';
+  let proxySeenSecret = '';
+  ctx.fetch = async (url, opts) => {
+    proxySeenTarget = String(url);
+    proxySeenSecret = opts?.headers?.get ? opts.headers.get('X-Desk-Origin-Secret') : '';
+    return new Response(JSON.stringify({ ok: true, runtimeMode: 'vps-daemon' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'ETag': 'W/"vps-1"' },
+    });
+  };
+  const vpsEnv = {
+    VPS_ORIGIN_URL: 'https://43-110-59-73.sslip.io/',
+    VPS_ORIGIN_SECRET: 'top-secret-origin',
+    DESK_STATE: {
+      get: async () => { proxyKvOps++; return null; },
+      put: async () => { proxyKvOps++; },
+    },
+  };
+  const vpsResp = await ctx.worker.fetch(new Request('https://test/api/health?foo=1'), vpsEnv, {});
+  assert.equal(vpsResp.status, 200);
+  assert.equal(vpsResp.headers.get('x-desk-proxy'), 'vps-origin');
+  assert.equal(proxySeenTarget, 'https://43-110-59-73.sslip.io/api/health?foo=1');
+  assert.equal(proxySeenSecret, 'top-secret-origin');
+  assert.equal((await vpsResp.json()).runtimeMode, 'vps-daemon');
+  const vpsSched = await ctx.worker.scheduled({ scheduledTime: Date.now() }, vpsEnv, {});
+  assert.equal(vpsSched.skipped, true);
+  assert.equal(proxyKvOps, 0, 'VPS origin mode must perform zero KV operations');
+
   testsCompleted = true;
-  console.log('PASS: Worker assertions (baseline + HTML/API ETag/304, ORIGIN-FRESH 304 parity, edge cache key normalization, SWR waitUntil, bounded concurrency, single-flight dedup, timeout KV fallback, rejection-safe deadline race, non-blocking health, scheduled maintenance, GitHub dispatch, CNBC batch & Nasdaq session rotation)');
+  console.log('PASS: Worker assertions (all baseline + KV write throttle + zero-KV VPS origin proxy mode)');
 })().catch((e) => {
   testsCompleted = true;
   console.error(e);

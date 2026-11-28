@@ -25,15 +25,18 @@ const WORKER_CONFIG = {
   STATE_FRESH_MS: 10_000,
   STATE_EDGE_MAX_SEC: 20,
   FALLBACK_COOLDOWN_SEC: 10,
-  CRON_LIVE_ACTIVE_MS: 4 * 60_000,
-  CRON_LIVE_IDLE_MS: 10 * 60_000,
-  CRON_NEWS_ACTIVE_MS: 5 * 60_000,
-  CRON_NEWS_IDLE_MS: 15 * 60_000,
+  CRON_LIVE_ACTIVE_MS: 15 * 60_000,
+  CRON_LIVE_IDLE_MS: 30 * 60_000,
+  CRON_NEWS_ACTIVE_MS: 15 * 60_000,
+  CRON_NEWS_IDLE_MS: 45 * 60_000,
+  KV_LIVE_WRITE_MIN_MS: 210_000,
+  KV_NEWS_WRITE_MIN_MS: 110_000,
   RESEARCH_ACTIVE_MAX_AGE_MS: 20 * 60_000,
   RESEARCH_WEEKDAY_IDLE_MAX_AGE_MS: 55 * 60_000,
   RESEARCH_IDLE_MAX_AGE_MS: 115 * 60_000,
   DISPATCH_COOLDOWN_MS: 12 * 60_000,
   DISPATCH_TIMEOUT_MS: 8000,
+  VPS_PROXY_TIMEOUT_MS: 12_000,
   GITHUB_REPO: "pirateradio9017/stock-trading-desk",
   GITHUB_WORKFLOW: "pipeline.yml",
   GITHUB_REF: "main",
@@ -1009,6 +1012,12 @@ function isFreshTimestamp(tsStr, maxAgeMs) {
   return age !== null && age >= 0 && age <= maxAgeMs;
 }
 
+function shouldPersistToKv(prevPayload, minIntervalMs, nowMs = Date.now()) {
+  if (!prevPayload || !prevPayload.updatedAt) return true;
+  const age = parseCnTimestampAgeMs(prevPayload.updatedAt, nowMs);
+  return age === null || age < 0 || age >= minIntervalMs;
+}
+
 function isValidLivePayload(payload) {
   return Boolean(payload && Array.isArray(payload.quotes) && payload.quotes.length >= 27);
 }
@@ -1220,7 +1229,9 @@ async function fetchAndStoreLive(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
 
   if (freshCount > 0 || hasFreshRotation || edgePrints.size > 0) {
     await putCachedPayload(cacheKey, "live", payload, WORKER_CONFIG.LIVE_EDGE_MAX_SEC, ctx);
-    safeKvPut(env, "live", payload, ctx);
+    if (shouldPersistToKv(cached, WORKER_CONFIG.KV_LIVE_WRITE_MIN_MS, now.getTime())) {
+      safeKvPut(env, "live", payload, ctx);
+    }
   }
   return payload;
 }
@@ -1431,7 +1442,9 @@ async function fetchAndStoreNews(env, ctx, cacheKey, cachedSeed, checkKvFirst = 
   };
   if (items.length > 0) {
     await putCachedPayload(cacheKey, "news", payload, WORKER_CONFIG.NEWS_EDGE_MAX_SEC, ctx);
-    safeKvPut(env, "news", payload, ctx);
+    if (shouldPersistToKv(cached, WORKER_CONFIG.KV_NEWS_WRITE_MIN_MS)) {
+      safeKvPut(env, "news", payload, ctx);
+    }
   }
   return payload;
 }
@@ -1826,8 +1839,53 @@ async function runScheduledMaintenance(env, ctx, now = new Date()) {
   return { refreshedLive, refreshedNews, refreshedSessionRotation, dispatch };
 }
 
+async function proxyToVpsOrigin(request, env) {
+  const originRaw = String(env?.VPS_ORIGIN_URL || "").trim().replace(/\/+$/, "");
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return jsonResponse({ ok: false, detail: "Method Not Allowed" }, 405);
+  }
+  const reqUrl = new URL(request.url);
+  const targetUrl = `${originRaw}${reqUrl.pathname}${reqUrl.search}`;
+  const fwdHeaders = new Headers();
+  const inm = request.headers.get("If-None-Match");
+  if (inm) fwdHeaders.set("If-None-Match", inm);
+  const accept = request.headers.get("Accept");
+  if (accept) fwdHeaders.set("Accept", accept);
+  const originSecret = String(env?.VPS_ORIGIN_SECRET || "").trim();
+  if (originSecret) fwdHeaders.set("X-Desk-Origin-Secret", originSecret);
+
+  try {
+    const signal = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(WORKER_CONFIG.VPS_PROXY_TIMEOUT_MS)
+      : undefined;
+    const upstream = await fetch(targetUrl, {
+      method: request.method,
+      headers: fwdHeaders,
+      signal,
+    });
+    const outHeaders = new Headers(upstream.headers);
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) outHeaders.set(k, v);
+    if (reqUrl.pathname.startsWith("/api/")) {
+      for (const [k, v] of Object.entries(CORS_HEADERS)) outHeaders.set(k, v);
+    }
+    outHeaders.set("X-Desk-Proxy", "vps-origin");
+    return new Response(request.method === "HEAD" || upstream.status === 304 ? null : upstream.body, {
+      status: upstream.status,
+      headers: outHeaders,
+    });
+  } catch (err) {
+    return jsonResponse(
+      { ok: false, detail: `VPS origin unreachable: ${err?.name || "error"}` },
+      { status: 502, cacheControl: "no-store", request }
+    );
+  }
+}
+
 export default {
   async scheduled(event, env, ctx) {
+    if (String(env?.VPS_ORIGIN_URL || "").trim() || String(env?.DISABLE_CRON || "").trim() === "1") {
+      return { skipped: true, reason: "vps_origin_active" };
+    }
     const now = event && Number.isFinite(event.scheduledTime) ? new Date(event.scheduledTime) : new Date();
     const task = runScheduledMaintenance(env, ctx, now);
     if (ctx && typeof ctx.waitUntil === "function") {
@@ -1843,6 +1901,10 @@ export default {
 
       if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: { ...SECURITY_HEADERS, ...CORS_HEADERS } });
+      }
+
+      if (String(env?.VPS_ORIGIN_URL || "").trim()) {
+        return await proxyToVpsOrigin(request, env);
       }
 
       if (path === "/" || path === "/index.html") {

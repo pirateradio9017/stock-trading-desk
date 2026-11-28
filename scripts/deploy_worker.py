@@ -55,7 +55,7 @@ def deploy_worker_rest(
     metadata = {
         "main_module": "index.js",
         "compatibility_date": "2024-11-01",
-        "keep_bindings": ["secret_text"],
+        "keep_bindings": ["secret_text", "plain_text"],
         "bindings": [
             {
                 "type": "kv_namespace",
@@ -90,7 +90,9 @@ def deploy_worker_rest(
         if sub_resp.status_code >= 400:
             raise RuntimeError(f"Subdomain enable failed ({sub_resp.status_code}): {sub_resp.text[:300]}")
 
-        sched_payload = [{"cron": expr} for expr in DEFAULT_CRON_SCHEDULES]
+        disable_cron = os.getenv("CF_DISABLE_CRON", "").strip().lower() in {"1", "true", "yes"}
+        active_crons: tuple[str, ...] = () if disable_cron else DEFAULT_CRON_SCHEDULES
+        sched_payload = [{"cron": expr} for expr in active_crons]
         sched_resp = client.put(
             f"{base}/workers/scripts/{worker_name}/schedules",
             headers={**headers, "Content-Type": "application/json"},
@@ -118,7 +120,7 @@ def deploy_worker_rest(
         "worker": worker_name,
         "kv_namespace_id": kv_namespace_id,
         "kv_pushed": kv_pushed,
-        "schedules": list(DEFAULT_CRON_SCHEDULES),
+        "schedules": list(active_crons),
         "worker_etag": upload_json.get("result", {}).get("etag", ""),
         "url": f"https://{worker_name}.pirateradio9017.workers.dev",
     }

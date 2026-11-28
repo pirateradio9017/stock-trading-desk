@@ -18,8 +18,12 @@ ENV_VAR_NAMES: tuple[str, ...] = (
     "CF_ACCOUNT_ID",
     "CF_API_TOKEN",
     "DESK_DATA_DIR",
+    "DESK_HOST",
     "DESK_PORT",
     "DESK_LOG_LEVEL",
+    "DESK_ENABLE_SCHEDULER",
+    "DESK_ORIGIN_SECRET",
+    "DESK_ADMIN_TOKEN",
 )
 
 
@@ -33,13 +37,19 @@ class DeskSettings:
     data_dir: Path
     port: int = 8787
     log_level: str = "INFO"
+    host: str = "0.0.0.0"
+    enable_scheduler: bool = False
+    origin_secret: str = ""
+    admin_token: str = ""
 
 
 def load_settings() -> DeskSettings:
     """Load runtime settings dynamically so tests and CLI overrides apply cleanly."""
     raw_dir = os.getenv("DESK_DATA_DIR", "").strip()
+    raw_host = os.getenv("DESK_HOST", "").strip()
     raw_port = os.getenv("DESK_PORT", "").strip()
     raw_level = os.getenv("DESK_LOG_LEVEL", "").strip()
+    raw_sched = os.getenv("DESK_ENABLE_SCHEDULER", "").strip().lower()
     return DeskSettings(
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         cf_account_id=os.getenv("CF_ACCOUNT_ID", "").strip(),
@@ -47,6 +57,10 @@ def load_settings() -> DeskSettings:
         data_dir=Path(raw_dir) if raw_dir else DEFAULT_DATA_DIR,
         port=int(raw_port) if raw_port else 8787,
         log_level=raw_level.upper() if raw_level else "INFO",
+        host=raw_host or "0.0.0.0",
+        enable_scheduler=raw_sched in {"1", "true", "yes", "on"},
+        origin_secret=os.getenv("DESK_ORIGIN_SECRET", "").strip(),
+        admin_token=os.getenv("DESK_ADMIN_TOKEN", "").strip(),
     )
 
 

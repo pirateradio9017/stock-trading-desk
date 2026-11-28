@@ -1,0 +1,22 @@
+[Unit]
+Description=Stock Trading Desk v2.0 (Always-On FastAPI + Scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/stock-trading-desk
+EnvironmentFile=/opt/stock-trading-desk/.env
+ExecStart=/opt/stock-trading-desk/.venv/bin/python -m src.server
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=1400M
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stock-trading-desk
+
+[Install]
+WantedBy=multi-user.target
