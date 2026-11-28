@@ -530,15 +530,9 @@ def test_pipeline_workflow_yaml_and_stdlib_schedule_step():
     wf_path = Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'pipeline.yml'
     wf = yaml.safe_load(wf_path.read_text(encoding='utf-8'))
     on_cfg = wf.get('on') or wf.get(True)
-    crons = [entry['cron'] for entry in on_cfg['schedule']]
-    assert SCHEDULE_BASELINE_CRON in crons
-    assert SCHEDULE_ACTIVE_ODD_CRON in crons
-    assert SCHEDULE_CROSS_MARKET_CRON in crons
-    assert SCHEDULE_SESSION_20M_CRON in crons
-    assert SCHEDULE_ACTIVE_HALF_HOUR_CRON in crons
-    assert SCHEDULE_REBALANCE_CRON in crons
-    rebal_entry = next(entry for entry in on_cfg['schedule'] if entry['cron'] == SCHEDULE_REBALANCE_CRON)
-    assert rebal_entry.get('timezone') == 'America/New_York'
+    # Scheduled GitHub Actions triggers are retired now that VPS daemon runs 24/7.
+    assert 'schedule' not in on_cfg
+    assert 'workflow_dispatch' in on_cfg
     cm_dec = resolve_research_schedule('schedule', SCHEDULE_CROSS_MARKET_CRON, datetime(2026, 11, 27, 6, 40, tzinfo=timezone.utc))
     assert cm_dec.run is True and cm_dec.reason == 'cross_market_close_open'
 

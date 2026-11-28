@@ -52,17 +52,30 @@ def deploy_worker_rest(
     headers = {"Authorization": f"Bearer {api_token}"}
     base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
 
+    vps_origin_url = os.getenv("CF_VPS_ORIGIN_URL", "").strip()
+    bindings: list[dict[str, str]] = [
+        {
+            "type": "kv_namespace",
+            "name": "DESK_STATE",
+            "namespace_id": kv_namespace_id,
+        }
+    ]
+    keep_bindings = ["secret_text", "plain_text"]
+    if vps_origin_url:
+        bindings.append(
+            {
+                "type": "plain_text",
+                "name": "VPS_ORIGIN_URL",
+                "text": vps_origin_url,
+            }
+        )
+        keep_bindings = ["secret_text"]
+
     metadata = {
         "main_module": "index.js",
         "compatibility_date": "2024-11-01",
-        "keep_bindings": ["secret_text", "plain_text"],
-        "bindings": [
-            {
-                "type": "kv_namespace",
-                "name": "DESK_STATE",
-                "namespace_id": kv_namespace_id,
-            }
-        ],
+        "keep_bindings": keep_bindings,
+        "bindings": bindings,
     }
 
     with httpx.Client(timeout=30.0) as client:
@@ -121,6 +134,7 @@ def deploy_worker_rest(
         "kv_namespace_id": kv_namespace_id,
         "kv_pushed": kv_pushed,
         "schedules": list(active_crons),
+        "vps_origin_url": vps_origin_url or None,
         "worker_etag": upload_json.get("result", {}).get("etag", ""),
         "url": f"https://{worker_name}.pirateradio9017.workers.dev",
     }
