@@ -1006,9 +1006,7 @@
       /* Mainlines & Momentum */
       function scoreLabel(m) {
         const title = String(m.title || "").trim();
-        if (title && [...title].length <= 8) return title;
-        const topic = title.match(/AI算力|先进封装|光通信|光模块|半导体设备|晶圆制造|长债避险|宏观通胀|加密流动性|能源与半导体|住宅建筑|公用事业|银行信用/);
-        return topic?.[0] || ASSET_CN[m.anchor_sym] || m.anchor_sym || m.id;
+        return title || "主题未命名";
       }
 
       function renderMomentum() {
@@ -1051,7 +1049,7 @@
             const isRaw = /[=^.-]/.test(sym);
             const showSym = isRaw ? (name || ASSET_CN[sym] || sym) : sym;
             const showName = isRaw || showSym === name ? "" : `<span class="muted">${esc(name)}</span>`;
-            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}<span class="pct ${cls}" style="background:none;padding:0;${chg ? "" : "display:none;"}">${esc(chg ? preLbl + chg : "")}</span></span>`;
+            return `<span class="stock-tag" data-sym="${esc(sym)}"><strong>${esc(showSym)}</strong>${showName}<span class="member-price">${esc(eff ? fmtPrice(sym, eff.price) : "—")}</span><span class="pct ${cls}" style="background:none;padding:0;${chg ? "" : "display:none;"}">${esc(chg ? preLbl + chg : "")}</span></span>`;
           }).join("");
 
           const anchor = m.anchor_sym || "";
@@ -1068,11 +1066,11 @@
             const rFields = [["传导假设", r.hypothesis], ["确认条件", r.confirmation], ["失效条件", r.invalidation], ["证据缺口", r.uncertainty]];
             for (const [k, v] of rFields) if (v) detailsParts.push(`<p><strong>${k}：</strong>${fmtHtml(v)}</p>`);
             if (Array.isArray(r.evidence) && r.evidence.length) {
-              detailsParts.push(`<ul>${r.evidence.map(it => {
+              detailsParts.push(`<div class="chain-timeline">${r.evidence.map(it => {
                 const u = safeUrl(it.source_url);
                 const lbl = esc([it.source, it.as_of].filter(Boolean).join(" · "));
-                return `<li>${fmtHtml(it.text)} ${u ? `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${lbl} ↗</a>` : lbl}</li>`;
-              }).join("")}</ul>`);
+                return `<div class="chain-node"><span class="chain-step-tag">${esc(String(it.as_of || "").slice(0,10))}</span><span>${fmtHtml(it.text)} ${u ? `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${lbl} ↗</a>` : lbl}</span></div>`;
+              }).join("")}</div>`);
             }
           }
 
@@ -1094,11 +1092,12 @@
                 </div>
               </div>
               <div class="warm-box">${fmtHtml(m.plain || "")}</div>
+              ${detailsParts.join("")}
               <div class="m-watch">
                 <div><strong>盯盘节点：</strong>${fmtHtml(m.watch_points || "")}</div>
-                ${src ? `<a class="src-link" href="${esc(src)}" target="_blank" rel="noopener noreferrer">一手源 ↗</a>` : ""}
+                ${src ? `<a class="src-link" href="${esc(src)}" target="_blank" rel="noopener noreferrer">来源 ↗</a>` : ""}
               </div>
-              ${detailsParts.length ? `<details class="quiet m-more"><summary>展开研究拆解与证据验证</summary><div class="drawer-body">${detailsParts.join("")}</div></details>` : ""}
+              
             </article>
           `;
         }).join("");
@@ -1108,6 +1107,8 @@
         const qm = quoteMap();
         document.querySelectorAll(".stock-tag[data-sym]").forEach(tag => {
           const eff = effectiveQuoteDisplay(qm[tag.getAttribute("data-sym")]);
+          const px = tag.querySelector(".member-price");
+          if (px && eff) px.textContent = fmtPrice(tag.dataset.sym, eff.price);
           const pct = tag.querySelector(".pct");
           if (eff && pct) {
             pct.style.display = "";
@@ -1661,15 +1662,14 @@
 
         const stories = STORE.state?.linkage || [];
         const barEl = document.getElementById("linkageBarSvg");
-        if (stories.length) {
-          barEl.innerHTML = stories.map(it => {
-            const match = String(it.corr || "").match(/(?:相关(?:系数)?\s*[:：]?\s*|^)([+−-]?\d+(?:\.\d+)?)/)
-              || String(it.corr || "").match(/([+−-]\d+(?:\.\d+)?)/);
-            const val = match ? Number(match[1].replace("−", "-")) : null;
-            const valid = val !== null && Math.abs(val) <= 1;
+        const corePairs = [["SPY","TLT"], ["SPY","NVDA"], ["SPY","GLD"], ["NVDA","BTC"]];
+        if (rawLabels.length && mat.length) {
+          barEl.innerHTML = corePairs.map(([a,b]) => {
+            const val = mat[rawLabels.indexOf(a)]?.[rawLabels.indexOf(b)];
+            const valid = Number.isFinite(val) && val !== 0 && Math.abs(val) <= 1;
             const pct = valid ? Math.abs(val) * 50 : 0;
-            const pair = humanizeCopy(it.pair).replace(/\s*[（(][A-Z0-9.^=/ -]+[）)]/g, "");
-            return `<div class="corr-reading"><div><strong>${esc(pair)}</strong><b>${valid ? (val > 0 ? "+" : "") + val.toFixed(2) : "待核对"}</b></div>
+            const pair = a + " / " + b;
+            return `<div class="corr-reading"><div><strong>${esc(pair)}</strong><b>${valid ? (val > 0 ? "+" : "") + val.toFixed(2) : (val === 0 ? "零值／样本待确认" : "缺少共同样本")}</b></div>
               <div class="corr-track"><i style="left:${val < 0 ? 50 - pct : 50}%;width:${pct}%;background:${val < 0 ? dn : up}"></i></div></div>`;
           }).join("") + '<div class="corr-scale"><span>−1 反向</span><span>0</span><span>同向 +1</span></div>';
         } else {

@@ -465,7 +465,7 @@ _SYSTEM_PROMPT = """你是一位服务于资深美股实盘交易员（piraterad
      - `plain_guide`（80–160 字）：用通顺的 2–3 句人话讲清楚“刚刚发生了什么 → 今晚/下阶段怎么看 → 关键验证位与风控底线”，**禁止列举一长串股票代码**。
      - `next_gate`（≤70 字）：简明写出下一个时间闸口与核心判定条件。
      - `vix_note` / `tnx_note` / `btc_note`（各 ≤24 字）：只写一句核心状态解读（如 `恐慌回吐，但仍处高位区间`），不要重复卡片已显示的现价和一堆 5D/20D 数字。
-   - 每条主线 `plain`（≤65 字）用大白话直击核心逻辑，不重复报价；`chain` 写 3 步精炼人话节点（每步 15–30 字）；`watch_points` 用 `1. ...；2. ...` 编号写出关键验证位与失效边界（≤90 字）；`summary`（≤140 字）按“新增事实；较上期变化；传导假设；反证/不确定性”精简组织，没有新增证据就直接写“本轮无新增证据”。
+   - 每条主线 `plain`（≤65 字）用大白话直击核心逻辑，不重复报价；`chain` 写 3 步精炼人话节点（每步 15–30 字）；`watch_points` 用 `1. ...；2. ...` 编号写出关键验证位与失效边界（≤90 字）；`summary`（≤140 字）按“新增事实；较上期变化；传导假设；反证/不确定性”精简组织，对照至少两项可得的同主题数据，标明各自日期，指出成员分化及可能推翻传导的观察；媒体报道注明来源，没有新增证据就直接写“本轮无新增证据”。
    - 每条主线附 reasoning，hypothesis / confirmation / invalidation / uncertainty 各一句（每句 ≤40 字），避免与正文重复啰嗦。来源时间是媒体发布时间，不能当作事件发生时间。
    - 换锚复核只是候选信号。锁定期沿用已接受锚定标的；开放窗口结合当前量价、估值及独立证据复核，若接受换锚，重新写齐该标的的逻辑、确认位与失效位，禁止继承旧锚价位。
    - 区分新闻报道、企业披露、行情观察、研究推断；只有新闻标题时，必须注明未核验原文。URL 出现在列表中不代表所有相关说法已验证。
@@ -1028,7 +1028,7 @@ def _extract_syms(stocks: str) -> list[str]:
     return [p.split(":", 1)[0].strip() for p in (stocks or "").split(",") if ":" in p]
 
 
-def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle) -> list[ResearchEvidence]:
+def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle, stocks: str = "") -> list[ResearchEvidence]:
     evidence: list[ResearchEvidence] = []
     quote = bundle.market.get_quote(anchor)
     if quote and quote.price is not None:
@@ -1065,20 +1065,32 @@ def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle) -> list[R
                     source_url=f"https://finance.yahoo.com/quote/{overseas_sym}",
                 ))
                 break
+    members = set(_extract_syms(stocks)) | {anchor}
     for filing in bundle.primary.sec_filings:
-        if filing.url == url:
+        if filing.url == url or filing.sym in members:
             evidence.append(ResearchEvidence(
                 kind="filing", text=f"{filing.sym} 提交 {filing.form}，采集到申报索引。",
-                source="SEC EDGAR", as_of=str(filing.filing_date), source_url=url,
+                source="SEC EDGAR", as_of=str(filing.filing_date), source_url=filing.url,
             ))
             break
     for report in bundle.news.research_items:
-        if report.link == url:
+        symbols = "|".join(re.escape(sym) for sym in sorted(members) if len(sym) >= 2)
+        names = [SYMBOL_SPEC_MAP[sym].name for sym in members if sym in SYMBOL_SPEC_MAP]
+        headline = report.title
+        if report.link and (report.link == url or any(len(n) >= 3 and n in headline for n in names)
+                            or (symbols and re.search(rf"(?<![A-Za-z0-9])(?:{symbols})(?![A-Za-z0-9])", headline, re.I))):
             evidence.append(ResearchEvidence(
                 kind="report", text=report.title[:450], source=report.source[:120],
-                as_of=report.pub_date_cn, source_url=url,
+                as_of=report.pub_date_cn, source_url=report.link,
             ))
             break
+    for sym in dict.fromkeys(_extract_syms(stocks)):
+        peer = bundle.market.get_quote(sym)
+        if sym != anchor and peer and peer.chg is not None and len(evidence) < 5:
+            evidence.append(ResearchEvidence(
+                kind="market", text=f"{sym} 当日 {peer.chg:+.2f}%，5 日变化 {_fmt_pct(peer.r5)}。",
+                source="Yahoo Finance", as_of=peer.tsUtc, source_url=f"https://finance.yahoo.com/quote/{sym}",
+            ))
     return evidence
 
 
@@ -1149,7 +1161,7 @@ def draft_to_state_response(
                 source_url=dm.source_url,
                 reasoning=MainlineReasoning(
                     **(dm.reasoning.model_dump() if anchor == dm.anchor_sym and dm.reasoning else {}),
-                    evidence=_mainline_evidence(anchor, dm.source_url, bundle),
+                    evidence=_mainline_evidence(anchor, dm.source_url, bundle, dm.stocks),
                 ),
             )
         )
