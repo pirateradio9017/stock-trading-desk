@@ -1069,7 +1069,7 @@ def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle, stocks: s
     for filing in bundle.primary.sec_filings:
         if filing.url == url or filing.sym in members:
             evidence.append(ResearchEvidence(
-                kind="filing", text=f"{filing.sym} 提交 {filing.form}，采集到申报索引。",
+                kind="filing", text=f"{filing.sym} 提交 {filing.form}。" + (f" 文件摘录：{filing.excerpt[:200]}" if filing.excerpt else " 已取得申报索引，正文待核。"),
                 source="SEC EDGAR", as_of=str(filing.filing_date), source_url=filing.url,
             ))
             break
@@ -1077,7 +1077,10 @@ def _mainline_evidence(anchor: str, url: str, bundle: IngestionBundle, stocks: s
         symbols = "|".join(re.escape(sym) for sym in sorted(members) if len(sym) >= 2)
         names = [SYMBOL_SPEC_MAP[sym].name for sym in members if sym in SYMBOL_SPEC_MAP]
         headline = report.title
-        if report.link and (report.link == url or any(len(n) >= 3 and n in headline for n in names)
+        chip_release = (report.source == "NVIDIA 官方博客" and "NVDA" in members
+                        and re.search(r"data cent(?:er|re)|accelerator|GPU|networking|inference|Blackwell|Rubin",
+                                      headline, re.I))
+        if report.link and (report.link == url or chip_release or any(len(n) >= 3 and n in headline for n in names)
                             or (symbols and re.search(rf"(?<![A-Za-z0-9])(?:{symbols})(?![A-Za-z0-9])", headline, re.I))):
             evidence.append(ResearchEvidence(
                 kind="report", text=report.title[:450], source=report.source[:120],

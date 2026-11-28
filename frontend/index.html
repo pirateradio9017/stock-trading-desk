@@ -1025,6 +1025,34 @@
         }).join("") : '<div class="empty-box">暂无主线评分</div>';
       }
 
+      const marketDay = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit"
+      });
+      function memberComparison(m, qm) {
+        const members = new Set(parseStocks(m.stocks).map(p => p.sym));
+        const rows = [];
+        // Include the optical link alongside chip producers, without changing portfolio membership.
+        const optical = !members.has("LITE") && /算力|半导体|光通信/.test(m.title)
+          && ["NVDA", "TSM", "AVGO"].filter(s => members.has(s)).length >= 2;
+        for (const sym of [...members, ...(optical ? ["LITE"] : [])]) {
+          const q = qm[sym];
+          if (!/^[A-Z]{1,5}$/.test(sym) || !q || !(q.price > 0) || !Number.isFinite(q.chg)) continue;
+          const stamp = String(q.tsUtc || "");
+          const day = /^\d{4}-\d{2}-\d{2}$/.test(stamp) ? stamp
+            : (Number.isFinite(Date.parse(stamp)) ? marketDay.format(new Date(stamp)) : "");
+          if (day) rows.push({sym, day, change:q.chg});
+        }
+        const day = rows.map(q => q.day).sort().pop();
+        const peers = rows.filter(q => q.day === day).sort((a,b) => b.change - a.change);
+        if (peers.length < 2) return "同日美股常规时段报价不足两项。";
+        const top = peers[0], bottom = peers[peers.length-1];
+        const values = peers.map(q => (optical && q.sym === "LITE" ? "光通信参照 LITE" : q.sym)
+          + " " + fmtChg(q.change)).join("、");
+        const spread = top.change - bottom.change;
+        return day + " 常规时段 · " + values + "。"
+          + (spread ? top.sym + " 领先 " + bottom.sym + " " + spread.toFixed(2) + " 个百分点。" : "所列涨跌幅持平。");
+      }
+
       function renderMainlines() {
         const el = document.getElementById("mainlinesContainer");
         const rows = STORE.state?.mainlines || [];
@@ -1061,6 +1089,9 @@
           const cleanStatus = humanizeCopy(m.status || "");
 
           const detailsParts = [];
+          if (!r?.evidence?.some(it => ["report","filing"].includes(it.kind) && safeUrl(it.source_url))) {
+            detailsParts.push("<p><strong>产业证据</strong>　这版研究尚未附上对应的产业报道或公司公告。</p>");
+          }
           if (m.summary) detailsParts.push(`<p><strong>研究拆解：</strong>${fmtHtml(m.summary)}</p>`);
           if (r) {
             const rFields = [["传导假设", r.hypothesis], ["确认条件", r.confirmation], ["失效条件", r.invalidation], ["证据缺口", r.uncertainty]];
@@ -1084,6 +1115,7 @@
                 <span class="pill ${toneCls(m.action_tone)}">${fmtHtml(m.action)}</span>
               </div>
               <div class="chain-timeline">${timelineHtml}</div>
+              <div class="warm-box"><strong>同日强弱</strong><div data-member-comparison="${esc(m.id)}">${esc(memberComparison(m, qm))}</div></div>
               <div class="stock-row">
                 <div class="stock-tags">${tagsHtml}</div>
                 <div class="m-anchor" data-anchor="${esc(anchor)}">
@@ -1105,6 +1137,11 @@
 
       function patchMainlinesLive() {
         const qm = quoteMap();
+        const lines = new Map((STORE.state?.mainlines || []).map(m => [m.id, m]));
+        document.querySelectorAll("[data-member-comparison]").forEach(el => {
+          const m = lines.get(el.dataset.memberComparison);
+          if (m) el.textContent = memberComparison(m, qm);
+        });
         document.querySelectorAll(".stock-tag[data-sym]").forEach(tag => {
           const eff = effectiveQuoteDisplay(qm[tag.getAttribute("data-sym")]);
           const px = tag.querySelector(".member-price");

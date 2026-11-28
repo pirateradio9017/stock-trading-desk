@@ -277,6 +277,10 @@ FEED_SOURCES: dict[str, FeedSpec] = {
         url="https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=60",
         kind="json",
     ),
+    "nvidia_blog": FeedSpec(
+        key="nvidia_blog", name="NVIDIA 官方博客", tier="L2_WIRE_EN",
+        url="https://blogs.nvidia.com/feed/", kind="rss",
+    ),
     "cnbc_markets": FeedSpec(
         key="cnbc_markets",
         name="CNBC Markets",
@@ -351,6 +355,7 @@ FEED_SOURCES: dict[str, FeedSpec] = {
 
 SEC_TRACKED_CIKS: dict[str, str] = {
     "NVDA": "0001045810",
+    "LITE": "0001633978",
     "TSM": "0001046179",
     "AAPL": "0000320193",
     "AVGO": "0001730168",
